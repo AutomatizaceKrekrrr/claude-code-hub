@@ -146,6 +146,12 @@
   function render() {
     const body = root.querySelector('.onb-body');
     body.textContent = '';
+
+    const planSec = section('Limit předplatného', 'Totéž, co ukazuje /usage v Claude Code.');
+    const planBox = el('div', 'pl-telo');
+    planSec.appendChild(planBox);
+    body.insertBefore(planSec, body.firstChild);
+    plan(io, planBox, false);
     const t = data.tokens || {};
     const pro = pokrocile();
     root.querySelector('.onb-sub').textContent = pro
@@ -287,6 +293,82 @@
     return d;
   }
 
+
+  /* ── limit předplatného: totéž co /usage v Claude Code ───────────────────
+     Procenta skutečného limitu (5 hodin a týden) od Anthropic, ne odhad z
+     přepisů. Každý vidí svůj; na serveru je to limit jeho vlastního
+     předplatného (v prostoru jede jen on), správce navíc vidí všechny v Týmu. */
+  function zbyva(iso) {
+    const t = Date.parse(iso || '');
+    if (!t) return '';
+    const min = Math.max(0, Math.round((t - Date.now()) / 60000));
+    if (min < 60) return 'obnoví se za ' + min + ' min';
+    const h = Math.floor(min / 60);
+    if (h < 24) return 'obnoví se za ' + h + ' h ' + (min % 60) + ' min';
+    const d = new Date(t);
+    return 'obnoví se ' + DNY[(d.getDay() + 6) % 7] + ' ' + d.getDate() + '. ' + (d.getMonth() + 1) + '. v ' +
+      d.getHours() + ':' + String(d.getMinutes()).padStart(2, '0');
+  }
+
+  function planRadek(nazev, okno, tenky) {
+    const row = el('div', 'pl-row' + (tenky ? ' tenky' : ''));
+    const stav = okno.pct >= 95 ? 'nad' : okno.pct >= 80 ? 'blizko' : '';
+    if (stav) row.classList.add(stav);
+    const hlava = el('div', 'pl-hlava');
+    hlava.appendChild(el('span', 'pl-nazev', nazev));
+    hlava.appendChild(el('span', 'pl-pct', Math.round(okno.pct) + ' %'));
+    row.appendChild(hlava);
+    const track = el('span', 'st-track');
+    const fill = el('span', 'st-fill');
+    fill.style.width = Math.max(1, Math.min(100, okno.pct)) + '%';
+    track.appendChild(fill);
+    row.appendChild(track);
+    const kdy = zbyva(okno.resets);
+    if (kdy) row.appendChild(el('div', 'pl-kdy', kdy));
+    return row;
+  }
+
+  function kresliPlanData(box, d) {
+    box.textContent = '';
+    if (!d || !d.ok) {
+      box.appendChild(el('div', 'set-note', (d && d.chyba) || 'Limit se teď nepodařilo zjistit.'));
+      return;
+    }
+    if (d.session) box.appendChild(planRadek('Aktuální sezení (5 hodin)', d.session));
+    if (d.week) box.appendChild(planRadek('Týden — všechny modely', d.week));
+    if (d.week_sonnet) box.appendChild(planRadek('Týden — Sonnet', d.week_sonnet, true));
+    if (d.week_opus) box.appendChild(planRadek('Týden — Opus', d.week_opus, true));
+    if (d.extra && d.extra.limit) {
+      const k = Math.pow(10, d.extra.dec || 2);
+      const cena = (v) => (Number(v || 0) / k).toLocaleString('cs-CZ', {maximumFractionDigits: 2}) + ' ' + (d.extra.mena || '');
+      box.appendChild(planRadek('Navíc (měsíc) — ' + cena(d.extra.used) + ' z ' + cena(d.extra.limit),
+        {pct: Number(d.extra.pct || 0), resets: null}, true));
+    }
+  }
+
+  async function plan(opts, box, refresh) {
+    box.textContent = '';
+    box.appendChild(el('div', 'set-note', 'Zjišťuju limit…'));
+    let d;
+    try {
+      d = await opts.api('plan-usage' + (refresh ? '?refresh=1' : ''));
+    } catch (_) { d = {ok: false, chyba: 'Limit se teď nepodařilo zjistit.'}; }
+    kresliPlanData(box, d);
+    return d;
+  }
+
+  /* Úvodní obrazovka: panel, který vidí každý. Bez přihlášení Clauda se nekreslí nic. */
+  async function planNaUvodu(opts, box) {
+    const d = await opts.api('plan-usage').catch(() => null);
+    if (!d || (!d.ok && d.druh === 'bez-prihlaseni')) { box.hidden = true; return; }
+    box.textContent = '';
+    box.appendChild(el('div', 'set-title', 'Limit předplatného'));
+    const telo = el('div', 'pl-telo');
+    box.appendChild(telo);
+    kresliPlanData(telo, d);
+    box.hidden = false;
+  }
+
   const STAV_TEXT = {nad: 'nad limitem', blizko: 'blízko limitu'};
 
   async function kresliTym(box) {
@@ -357,6 +439,33 @@
     }
     s.appendChild(list);
     box.appendChild(s);
+
+    // Správce: kdo je jak blízko skutečnému limitu předplatného (jen kdo ho připojil).
+    const sPlan = lide.filter((r) => r.plan && r.plan.ok);
+    if (admin && sPlan.length) {
+      const p = section('Tým — limit předplatného', 'Skutečná procenta limitu od Anthropic u těch, kdo mají připojené vlastní předplatné.');
+      const rows = el('div', 'st-tym-rows');
+      for (const r of sPlan) {
+        const row = el('div', 'st-tym-row');
+        row.appendChild(el('span', 'st-row-name', r.name || r.email));
+        for (const [nazev, okno] of [['5 h', r.plan.session], ['týden', r.plan.week]]) {
+          if (!okno) continue;
+          const track = el('span', 'st-track');
+          const fill = el('span', 'st-fill');
+          fill.style.width = Math.max(1, Math.min(100, okno.pct)) + '%';
+          if (okno.pct >= 95) fill.style.background = 'var(--red)';
+          else if (okno.pct >= 80) fill.style.background = 'var(--accent)';
+          track.appendChild(fill);
+          row.appendChild(track);
+          const v = el('span', 'st-row-val', nazev + ' ' + Math.round(okno.pct) + ' %');
+          v.title = zbyva(okno.resets);
+          row.appendChild(v);
+        }
+        rows.appendChild(row);
+      }
+      p.appendChild(rows);
+      box.appendChild(p);
+    }
   }
 
   function close() {
@@ -494,6 +603,6 @@
       `${datum(d.first)} – ${datum(d.last)}. ${d.note || ''}`));
   }
 
-  global.HubStats = {open, close, openProject, dolary, cislo};
+  global.HubStats = {open, close, openProject, dolary, cislo, plan, planNaUvodu};
 
 })(window);

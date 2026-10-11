@@ -1308,6 +1308,10 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 return self._json({"ok": False, "error": str(exc)}, 400)
             return self._json({"error": "Neznámá akce."}, 400)
+        if name == "plan-usage":
+            # Zbývající limit předplatného (5 hodin, týden) — jako /usage v Claude Code.
+            from . import usage
+            return self._json(usage.own(refresh=(query.get("refresh") or [""])[0] == "1"))
         if name == "project-usage":
             # Tokeny a cena u každého projektu — z mezipaměti, bez čtení přepisů.
             usage = stats.project_usage()

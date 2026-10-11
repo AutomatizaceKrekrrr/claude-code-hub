@@ -225,6 +225,39 @@ def _stav_limitu(cost, limit):
     return "blizko" if cost >= BLIZKO * limit else "ok"
 
 
+# ── využití předplatného (hub/usage.py) po lidech ───────────────────────────
+# Brána drží token každého, kdo připojil vlastní předplatné (workspace.predplatne).
+# Pro admina z toho jde ukázat, kdo je jak blízko skutečnému limitu; ostatním jen
+# jejich vlastní. Odpovědi se drží 5 minut a berou se na pozadí.
+PLAN_OBNOVA = 300
+_plan = {"lide": {}, "bezi": False}
+
+
+def _plan_na_pozadi(users):
+    from hub import usage
+    out = {}
+    for u in users:
+        sub = workspace.predplatne(u)
+        if not sub:
+            continue
+        r = usage.fetch(sub["token"])
+        r["cas"] = int(time.time())
+        out[u["id"]] = r
+    with _lock:
+        _plan["lide"] = out
+        _plan["bezi"] = False
+        _plan["cas"] = time.time()
+
+
+def _plan_pro(users):
+    with _lock:
+        stale = time.time() - _plan.get("cas", 0) > PLAN_OBNOVA
+        if stale and not _plan["bezi"]:
+            _plan["bezi"] = True
+            threading.Thread(target=_plan_na_pozadi, args=([dict(u) for u in users],), daemon=True).start()
+        return dict(_plan["lide"])
+
+
 def prehled(users, only=None, wait=0.0):
     """Spotřeba za posledních 7 dní po lidech. `users` = řádky účtů,
     `only` = e-mail, pro kterého se vrací jen jeden řádek (běžný člověk).
@@ -246,6 +279,7 @@ def prehled(users, only=None, wait=0.0):
     lim = limity()
     kolikrat = preslo()
     out = []
+    plan = _plan_pro(users)
     for u in users:
         email = u["email"].lower()
         if only and email != only.lower():
@@ -264,6 +298,7 @@ def prehled(users, only=None, wait=0.0):
             "preslo": int((kolikrat.get(email) or {}).get("pocet") or 0),
             "preslo_kdy": (kolikrat.get(email) or {}).get("naposledy") or "",
             "zablokovany": bool(u.get("disabled")),
+            "plan": plan.get(u["id"]),
         })
     out.sort(key=lambda r: -r["tyden"])
     soucet = sum(r["tyden"] for r in out)

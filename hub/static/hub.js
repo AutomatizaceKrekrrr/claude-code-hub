@@ -2328,6 +2328,7 @@ function renderWelcome() {
 
   renderWelcomeCols();
   renderWelcomeStats();
+  HubStats.planNaUvodu(hubIO(), $('welcome-usage'));
   renderWelcomeUpdate();
 
   const facts = [];
