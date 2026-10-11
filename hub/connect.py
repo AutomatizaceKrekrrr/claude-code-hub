@@ -129,37 +129,40 @@ SERVICES = {
         "kind": "mcp",
         "url": "https://mcp.facebook.com/ads",
     },
-    # Oficiální vzdálený server GitHubu (github/github-mcp-server). Přihlášení
-    # OAuth pouští jen klientům, které má GitHub předem zaregistrované (VS Code,
-    # Copilot) — Claude Code si klienta sám nezaregistruje, a na serveru by navíc
-    # nebylo kam přesměrovat. Proto osobní token v hlavičce, jak to GitHub sám
-    # radí pro Claude Code. Ověřeno 11. 10. 2026: initialize s tokenem → 200.
+    # GitHub = dvě věci naráz, obě pod jedním přihlášením:
+    #  - oficiální vzdálený MCP server (github/github-mcp-server) se VŠEMI sadami
+    #    nástrojů (/x/all — 95 nástrojů místo výchozích 46),
+    #  - přihlášené `gh` + git, protože MCP server ani se všemi sadami neumí
+    #    spolupracovníky, tajné údaje a proměnné Actions, nastavení repa,
+    #    ochranu větví, webhooky, Pages ani mazání (ověřeno tools/list 11. 10. 2026).
+    # Přihlášení: kód na github.com/login/device přes `gh auth login --web` —
+    # žádné přesměrování, takže jde i na serveru. OAuth přímo do MCP serveru
+    # GitHub pouští jen předem registrovaným klientům, proto token v hlavičce.
     "github": {
         "label": "GitHub",
-        "note": "Repozitáře, kód, issues, pull requesty a GitHub Actions.",
-        "kind": "apikey",
-        "url": "https://api.githubcopilot.com/mcp/",
+        "note": "Repozitáře, kód, issues, pull requesty, Actions, tajné údaje, "
+                "spolupracovníci a nastavení repozitářů.",
+        "kind": "github",
+        "url": "https://api.githubcopilot.com/mcp/x/all",
         "header": "Authorization",
         "prefix": "Bearer ",
-        "field": {"name": "account", "label": "Osobní přístupový token (github_pat_… nebo ghp_…)",
+        "field": {"name": "account", "label": "Osobní přístupový token (ghp_… nebo github_pat_…)",
                   "secret": True,
-                  "help": "GitHub → Settings → Developer settings → Personal access tokens. "
-                          "Doporučený je Fine-grained token jen na repozitáře, které Claude potřebuje."},
-        "warn": "Claude uvidí a smí měnit to, co token povolí. Dej mu jen ty repozitáře a "
-                "oprávnění, které potřebuje, a nastav mu platnost.",
+                  "help": "Jen když nechceš přihlášení přes GitHub výše."},
+        "warn": "Claude smí na GitHubu všechno, co ty — včetně mazání repozitářů a "
+                "změn v organizacích. Přihlášení jde kdykoli zrušit křížkem tady, "
+                "nebo na GitHubu v Settings → Applications.",
         "check": {"url": "https://api.github.com/user", "header": "Authorization", "prefix": "Bearer "},
         "setup": [
             {"title": "Vytvoř token", "button": "Otevřít GitHub",
-             "url": "https://github.com/settings/personal-access-tokens/new",
-             "text": "Pojmenuj ho (třeba Claude Hub), nastav platnost a v Repository access vyber "
-                     "repozitáře — všechny, nebo jen některé."},
-            {"title": "Vyber oprávnění", "button": "",
-             "url": "",
-             "text": "V Permissions → Repository permissions dej Read and write u Contents, Issues "
-                     "a Pull requests (a Actions, když má Claude pouštět workflow). Jen ke čtení "
-                     "stačí Read-only. Pak Generate token a token zkopíruj."},
+             "url": "https://github.com/settings/tokens/new?description=Claude%20Hub&scopes="
+                    "repo,workflow,admin:org,admin:repo_hook,admin:org_hook,delete_repo,"
+                    "gist,user,project,notifications,write:packages,delete:packages",
+             "text": "Oprávnění jsou předvyplněná na všechno. Nastav platnost, dole "
+                     "Generate token a token zkopíruj."},
             {"title": "Vlož ho sem dolů", "button": "", "url": "",
-             "text": "Token GitHub ukáže jen jednou — když ho ztratíš, vytvoř nový."},
+             "text": "Token GitHub ukáže jen jednou — když ho ztratíš, vytvoř nový. "
+                     "Fine-grained token taky jde, ale Claude pak umí jen to, co mu v něm povolíš."},
         ],
     },
     "google": {
@@ -412,7 +415,7 @@ def _catalog_names():
     """Jména serverů, které patří službám z katalogu (Freelo-firma, Clockify…)."""
     names = set()
     for sid, spec in SERVICES.items():
-        if spec["kind"] in ("mcp", "apikey"):
+        if spec["kind"] in ("mcp", "apikey", "github"):
             names.update(a["name"] for a in _mcp_accounts(sid, spec, {}))
         elif spec["kind"] == "token":
             names.update(a["name"] for a in _cmd_accounts(sid, spec, {}))
@@ -546,6 +549,9 @@ def services(refresh=False):
             item["accounts"] = _mcp_accounts(sid, spec, states)
             if spec.get("setup"):
                 item["setup"] = spec["setup"]
+            if spec["kind"] == "github" and not _gh():
+                item["missing"] = ("Chybí GitHub CLI (gh), přes které Claude dělá to, co "
+                                   "MCP server GitHubu neumí: https://cli.github.com")
         if not _claude():
             item["missing"] = "Claude Code (claude) tu není nainstalovaný."
         if spec["kind"] == "google":
@@ -596,6 +602,10 @@ def add_account(service, label="", account="", client_id="", client_secret=""):
         return google_login_start()
     if spec["kind"] == "custom":
         return add_custom(label, account, client_id, client_secret)
+    if spec["kind"] == "github":
+        if not _claude():
+            return {"ok": False, "detail": "Claude Code (claude) tu není nainstalovaný."}
+        return github_add_token(account) if (account or "").strip() else github_login_start()
     claude = _claude()
     if not claude:
         return {"ok": False, "detail": "Claude Code (claude) tu není nainstalovaný."}
@@ -678,6 +688,8 @@ def remove_account(service, name):
         core.log("služby: odebrán Google účet")
         _recheck()
         return {"ok": True, "detail": f"Google účet {name} odebrán."}
+    if spec["kind"] == "github" and name.startswith("github-") and name in _user_servers():
+        return github_remove(name)
     if spec["kind"] == "custom":
         if name not in {a["name"] for a in _custom_accounts({}, _catalog_names())}:
             return {"ok": False, "detail": "Takové vlastní napojení tu není."}
@@ -968,6 +980,234 @@ def _write_google_token(email, token, client_id, client_secret):
     os.replace(tmp, path)
 
 
+# ── GitHub: MCP server + gh pod jedním přihlášením ──────────────────────────
+GITHUB_DEVICE = "https://github.com/login/device"
+# Všechno, co klasický token umí, kromě enterprise a kódových prostorů.
+GITHUB_SCOPES = ("repo,workflow,admin:org,admin:repo_hook,admin:org_hook,delete_repo,"
+                 "gist,user,project,notifications,write:packages,delete:packages,"
+                 "admin:public_key,admin:gpg_key,admin:ssh_signing_key")
+
+
+def _gh():
+    return shutil.which("gh") or ""
+
+
+def _github_user(token):
+    """Přihlašovací jméno na GitHubu k tokenu, nebo ""."""
+    req = urllib.request.Request("https://api.github.com/user", headers={
+        "Authorization": "Bearer " + token, "User-Agent": "claude-code-hub",
+        "Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return str(json.loads(resp.read().decode("utf-8")).get("login") or "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _gh_accounts():
+    """Účty, pod kterými je `gh` přihlášené (podle `gh auth status`)."""
+    if not _gh():
+        return []
+    r = _run([_gh(), "auth", "status", "-h", "github.com"], 30)
+    return re.findall(r"account (\S+)", (r.stdout or "") + (r.stderr or ""))
+
+
+def _gh_login_token(token):
+    """`gh auth login --with-token` + git přes gh. Vrací "" nebo větu o chybě."""
+    try:
+        r = subprocess.run([_gh(), "auth", "login", "-h", "github.com", "-p", "https",
+                            "--with-token"], input=token + "\n", capture_output=True,
+                           text=True, cwd=core.HOME, timeout=60,
+                           creationflags=core._NO_WINDOW)
+    except Exception as exc:
+        return str(exc)
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()
+        if "read:org" in err:
+            return ("gh ten token nevzalo — klasickému tokenu chybí oprávnění read:org "
+                    "(nebo admin:org). Vytvoř ho tlačítkem výše, tam je všechno předvyplněné.")
+        return err[:300] or "gh se nepřihlásilo."
+    return ""
+
+
+def _github_register(token=""):
+    """Po přihlášení `gh`: git přes gh a MCP server `github-<login>` se stejným
+    tokenem. Vrací (ok, zpráva, jméno serveru)."""
+    gh = _gh()
+    if not token:
+        r = _run([gh, "auth", "token", "-h", "github.com"], 30)
+        token = (r.stdout or "").strip()
+    login = _github_user(token) if token else ""
+    if not login:
+        return False, "GitHub přihlášení nepotvrdil — zkus to znovu.", ""
+    _run([gh, "auth", "setup-git", "-h", "github.com"], 30)
+    name = "github-" + (_slug(login, 40) or "ucet")
+    claude = _claude()
+    if name in _user_servers():          # znovu přihlášený účet → nový token
+        _run([claude, "mcp", "remove", name, "-s", "user"], 30)
+    spec = SERVICES["github"]
+    r = _run([claude, "mcp", "add", "--transport", "http", "-s", "user", name, spec["url"],
+              "--header", f"{spec['header']}: {spec['prefix']}{token}"])
+    if r.returncode != 0:
+        return False, (r.stderr or r.stdout or "nepovedlo se").strip()[:300], ""
+    core.log(f"služby: GitHub {login} napojený (MCP + gh)")
+    write_claude_md()
+    _recheck()
+    return True, f"GitHub {login} napojený — MCP nástroje i gh a git.", name
+
+
+class _GithubLogin:
+    """`gh auth login --web` v pty: jednorázový kód ven, GitHub potvrdí sám
+    (gh se ho mezitím ptá), na konci se zaregistruje MCP server."""
+    kind = "github"
+
+    def __init__(self):
+        self.id = secrets.token_urlsafe(12)
+        self.started = time.time()
+        self.raw = ""
+        self.code = ""
+        self.done = False
+        self.ok = False
+        self.message = ""
+        self._entered = False
+        self._answered = 0
+        env = core.child_env()
+        env["BROWSER"] = env["GH_BROWSER"] = "true"   # prohlížeč tady neotvírat
+        env.pop("GH_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
+        self.pty = pty_backend.spawn([_gh(), "auth", "login", "-h", "github.com", "-p", "https",
+                                      "--web", "-s", GITHUB_SCOPES],
+                                     cwd=core.HOME, env=env, cols=400, rows=40)
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        while True:
+            chunk = self.pty.read()
+            if not chunk:
+                break
+            with _LOCK:
+                self.raw = (self.raw + chunk.decode("utf-8", "replace"))[-20000:]
+                text = _clean(self.raw)
+                if not self.code:
+                    m = re.search(r"one-time code:\s*([A-Z0-9]{4}-[A-Z0-9]{4})", text)
+                    self.code = m.group(1) if m else ""
+            # „Press Enter to open github.com…" a případné „(Y/n)" — výchozí volba.
+            asked = len(re.findall(r"\(Y/n\)", text))
+            if ("Press Enter" in text and not self._entered) or asked > self._answered:
+                self._entered = "Press Enter" in text
+                self._answered = asked
+                try:
+                    self.pty.write(b"\r")
+                except OSError:
+                    pass
+        code = _exit_code(self.pty)
+        ok, message = False, _last_line(_clean(self.raw)) or "Přihlášení se nepovedlo."
+        if code == 0:
+            ok, message, _ = _github_register()
+        with _LOCK:
+            self.done, self.ok, self.message = True, ok, message
+
+    def paste(self, url, wait=0):
+        with _LOCK:
+            self.message = "Tady se nic nevkládá — stačí na GitHubu zadat kód a potvrdit."
+
+    def cancel(self):
+        try:
+            self.pty.close()
+        except Exception:
+            pass
+
+
+def github_login_start():
+    if not _gh():
+        return {"ok": False, "detail": "Chybí GitHub CLI (gh): https://cli.github.com"}
+    _cleanup()
+    try:
+        login = _GithubLogin()
+    except (pty_backend.PtyUnavailable, OSError) as exc:
+        return {"ok": False, "detail": f"Přihlášení nejde spustit: {exc}"}
+    with _LOCK:
+        _LOGINS[login.id] = login
+    end = time.time() + 25
+    while time.time() < end:
+        with _LOCK:
+            if login.code or login.done:
+                break
+        time.sleep(0.2)
+    with _LOCK:
+        if login.code and not login.done:
+            return {"ok": True, "login": {"id": login.id, "url": GITHUB_DEVICE,
+                                          "code": login.code}}
+        detail = login.message or _last_line(_clean(login.raw)) or "gh kód nevypsalo."
+    login.cancel()
+    return {"ok": False, "detail": detail}
+
+
+def github_add_token(token):
+    token = (token or "").strip()
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+    if not token:
+        return {"ok": False, "detail": "Chybí token."}
+    if not _gh():
+        return {"ok": False, "detail": "Chybí GitHub CLI (gh): https://cli.github.com"}
+    bad = _key_rejected(SERVICES["github"], token)
+    if bad:
+        return {"ok": False, "detail": bad}
+    bad = _gh_login_token(token)
+    if bad:
+        return {"ok": False, "detail": bad}
+    ok, message, name = _github_register(token)
+    if not ok:
+        return {"ok": False, "detail": message}
+    return {"ok": True, "name": name, "login": {"done": True, "message": message}}
+
+
+def github_remove(name):
+    """MCP server pryč a `gh` se z toho účtu odhlásí — „odebrat" má znamenat,
+    že Claude na GitHub nesmí vůbec, ne jen přes MCP."""
+    claude, spec = _claude(), SERVICES["github"]
+    auth = str(((_user_servers().get(name) or {}).get("headers") or {}).get(spec["header"]) or "")
+    login = _github_user(auth[len(spec["prefix"]):]) if auth.startswith(spec["prefix"]) else ""
+    login = (login or name[len("github-"):]).lower()
+    r = _run([claude, "mcp", "remove", name, "-s", "user"], 30)
+    if r.returncode != 0:
+        return {"ok": False, "detail": (r.stderr or r.stdout or "nepovedlo se").strip()[:300]}
+    for acc in _gh_accounts():
+        if acc.lower() == login:
+            _run([_gh(), "auth", "logout", "-h", "github.com", "-u", acc], 30)
+    write_claude_md()
+    core.log(f"služby: odebrán GitHub {name}")
+    _recheck()
+    return {"ok": True, "detail": f"GitHub {login} odebrán (i z gh)."}
+
+
+def github_upgrade():
+    """Účty z 2.67 (jen MCP, výchozí sady nástrojů, gh nepřihlášené) převede
+    na plné napojení — se stejným tokenem, bez nového přihlašování."""
+    claude, spec = _claude(), SERVICES["github"]
+    for name, entry in list(_user_servers().items()):
+        if not name.startswith("github-") or not isinstance(entry, dict):
+            continue
+        url = entry.get("url") or ""
+        if "api.githubcopilot.com" not in url:
+            continue
+        auth = str((entry.get("headers") or {}).get(spec["header"]) or "")
+        token = auth[len(spec["prefix"]):] if auth.startswith(spec["prefix"]) else ""
+        if url.rstrip("/") == spec["url"] or not token:
+            continue
+        if _gh() and not _gh_accounts():
+            bad = _gh_login_token(token)
+            if not bad:
+                _run([_gh(), "auth", "setup-git", "-h", "github.com"], 30)
+        _run([claude, "mcp", "remove", name, "-s", "user"], 30)
+        r = _run([claude, "mcp", "add", "--transport", "http", "-s", "user", name,
+                  spec["url"], "--header", f"{spec['header']}: {spec['prefix']}{token}"])
+        core.log(f"služby: GitHub {name} převeden na všechny nástroje"
+                 + ("" if r.returncode == 0 else f" — selhalo: {(r.stderr or '')[:200]}"),
+                 "info" if r.returncode == 0 else "warn")
+
+
 def _cleanup():
     now = time.time()
     with _LOCK:
@@ -1125,6 +1365,10 @@ def _sync_on_start():
             _ensure_google_server()
     except Exception as exc:
         core.log(f"napojení Google při startu: {exc}", "warn")
+    try:
+        github_upgrade()
+    except Exception as exc:
+        core.log(f"napojení GitHub při startu: {exc}", "warn")
     # sync_shared přehled v CLAUDE.md zapíše samo — když doběhne.
     if not core.on_gateway() or sync_shared() is None:
         write_claude_md()
@@ -1166,6 +1410,19 @@ def _napojeni_block():
                   f"se {default}. Jiný e-mail zadej, jen když uživatel chce jiný",
                   "z napojených účtů. Nikdy ho nehádej podle účtu Claude ani podle",
                   "e-mailů jiných lidí — pro ně přihlášení není a nástroj selže."]
+    github = [n for n in servers if n.startswith("github-")]
+    if github:
+        lines += ["",
+                  "**GitHub:** napojený jako " + ", ".join(f"`{n}`" for n in github) + ".",
+                  "Pod stejným účtem je přihlášené i `gh` a git (push a clone přes https).",
+                  "MCP nástroje GitHubu neumí spolupracovníky, tajné údaje a proměnné",
+                  "Actions, nastavení repa, ochranu větví, webhooky, Pages, deploy klíče",
+                  "ani mazání repa — na to použij rovnou `gh` (`gh secret set`,",
+                  "`gh variable set`, `gh repo edit`, `gh repo delete`) nebo `gh api`,",
+                  "třeba `gh api -X PUT repos/VLASTNIK/REPO/collaborators/LOGIN -f permission=push`.",
+                  "Uživatele **nikdy neposílej na `gh auth login`** — když `gh auth status`",
+                  "hlásí chybu, ať se znovu přihlásí v Nastavení → Napojení → GitHub.",
+                  "Před nevratnými kroky (mazání repa, změny v organizaci) se zeptej."]
     lines.append(NAPOJENI_MARK[1])
     return "\n".join(lines) + "\n"
 

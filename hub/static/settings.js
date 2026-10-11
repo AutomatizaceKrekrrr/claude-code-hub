@@ -1429,7 +1429,7 @@
         again.onclick = async () => {
           again.disabled = true;
           try {
-            const r = svc.kind === 'google'
+            const r = (svc.kind === 'google' || svc.kind === 'github')
               ? await io.api('connect', {action: 'add', service: svc.id})
               : await io.api('connect', {action: 'login', name: acc.name});
             startLogin(svc, r, slot);
@@ -1443,8 +1443,10 @@
       const del = el('button', 'set-x', '×');
       del.title = 'Odebrat účet';
       del.onclick = async () => {
-        if (!(await HubDialog.confirm(svc.kind === 'custom' ? `Odebrat napojení ${acc.label}?`
-                                           : `Odebrat účet ${acc.label} (${svc.label})?`, {title: 'Odebrat napojení', ok: 'Odebrat'}))) return;
+        const question = svc.kind === 'custom' ? `Odebrat napojení ${acc.label}?`
+          : svc.kind === 'github' ? `Odebrat GitHub ${acc.label}? Odhlásí se i gh, takže tady přestane fungovat i git push na GitHub.`
+          : `Odebrat účet ${acc.label} (${svc.label})?`;
+        if (!(await HubDialog.confirm(question, {title: 'Odebrat napojení', ok: 'Odebrat'}))) return;
         try {
           const r = await io.api('connect', {action: 'remove', service: svc.id, name: acc.name});
           if (mine) {
@@ -1508,7 +1510,134 @@
       return row;
     }
 
+    /* GitHub: hlavní cesta je přihlášení kódem (gh auth login --web), token
+       z GitHubu jen jako záloha schovaná pod odkazem. */
+    function githubForm(svc, form) {
+      form.textContent = '';
+      form.appendChild(el('div', 'set-note',
+        'Přihlásíš se na GitHubu a Claude pak umí všechno: repozitáře, issues, ' +
+        'pull requesty, Actions, tajné údaje, spolupracovníky, nastavení i push.'));
+      const slot = el('div', 'svc-slot');
+      const go = el('button', 'btn primary', 'Přihlásit přes GitHub');
+      go.onclick = async () => {
+        go.disabled = true;
+        go.textContent = 'Připravuju přihlášení…';
+        try {
+          const r = await io.api('connect', {action: 'add', service: svc.id});
+          go.hidden = true;
+          adv.hidden = true;
+          startLogin(svc, r, slot);
+        } catch (err) {
+          io.toast('Nepovedlo se: ' + err.message);
+          go.disabled = false;
+          go.textContent = 'Přihlásit přes GitHub';
+        }
+      };
+      form.appendChild(go);
+      const adv = el('details', 'svc-adv');
+      adv.appendChild(el('summary', null, 'Raději vložím vlastní token'));
+      const steps = el('ol', 'mcp-steps');
+      for (const step of svc.setup || []) {
+        const li = el('li', 'mcp-step');
+        const head = el('div', 'mcp-step-head');
+        head.appendChild(el('strong', null, step.title));
+        if (step.url) {
+          head.appendChild(el('span', 'spacer'));
+          const open = el('button', 'btn ghost', step.button || 'Otevřít');
+          open.onclick = () => io.open(step.url);
+          head.appendChild(open);
+        }
+        li.appendChild(head);
+        li.appendChild(el('div', 'set-note', step.text));
+        steps.appendChild(li);
+      }
+      adv.appendChild(steps);
+      const token = field(adv, svc.field.label, '', svc.field.help);
+      token.type = 'password';
+      token.autocomplete = 'new-password';
+      const useToken = el('button', 'btn primary', 'Napojit tokenem');
+      useToken.onclick = async () => {
+        const value = token.value.trim();
+        if (!value) { io.toast('Vlož token.'); token.focus(); return; }
+        useToken.disabled = true;
+        useToken.textContent = 'Ověřuju token…';
+        try {
+          const r = await io.api('connect', {action: 'add', service: svc.id, account: value});
+          token.value = '';
+          startLogin(svc, r, slot);
+        } catch (err) {
+          io.toast('Nepovedlo se: ' + err.message);
+        }
+        useToken.disabled = false;
+        useToken.textContent = 'Napojit tokenem';
+      };
+      token.onkeydown = (ev) => { if (ev.key === 'Enter') useToken.click(); };
+      adv.appendChild(useToken);
+      form.appendChild(adv);
+      form.appendChild(slot);
+    }
+
+    /* Kód na github.com/login/device — nic se nevkládá zpátky, gh se GitHubu
+       samo ptá, jestli už je potvrzeno. */
+    function deviceLogin(svc, login, slot) {
+      slot.textContent = '';
+      const p = el('div', 'svc-login');
+      p.appendChild(el('div', 'svc-step', '1. Zkopíruj tenhle kód:'));
+      const codeRow = el('div', 'svc-paste');
+      const code = el('input', 'svc-code');
+      code.type = 'text';
+      code.readOnly = true;
+      code.value = login.code;
+      code.onclick = () => code.select();
+      const copy = el('button', 'btn ghost', 'Kopírovat');
+      const copyCode = async () => {
+        try { await navigator.clipboard.writeText(login.code); io.toast('Kód zkopírovaný.'); }
+        catch (_) { code.select(); }
+      };
+      copy.onclick = copyCode;
+      codeRow.append(code, copy);
+      p.appendChild(codeRow);
+      p.appendChild(el('div', 'svc-step',
+        '2. Otevři GitHub, vlož kód a dej Authorize. Hotovo se tady ukáže samo.'));
+      const openBtn = el('button', 'btn primary', 'Zkopírovat kód a otevřít GitHub');
+      openBtn.onclick = () => { copyCode(); io.open(login.url); };
+      p.appendChild(openBtn);
+      const status = el('div', 'set-note svc-status', 'Čekám na potvrzení na GitHubu…');
+      p.appendChild(status);
+      const cancel = el('button', 'linkbtn', 'Zrušit');
+      p.appendChild(cancel);
+      slot.appendChild(p);
+      let stopped = false;
+      cancel.onclick = () => {
+        stopped = true;
+        io.api('connect', {action: 'cancel', id: login.id}).catch(() => {});
+        slot.textContent = '';
+        load(false);
+      };
+      (async () => {
+        while (!stopped) {
+          await wait(2000);
+          if (stopped || !p.isConnected) break;
+          let st;
+          try {
+            st = await io.api('connect', {action: 'status', id: login.id});
+          } catch (_) { continue; }
+          if (stopped || !st.done) continue;
+          stopped = true;
+          if (st.ok) {
+            io.toast(st.message || 'GitHub napojený.');
+            slot.textContent = '';
+            load(true);
+          } else {
+            status.className = 'set-warn svc-status';
+            status.textContent = st.message || 'Přihlášení se nepovedlo.';
+          }
+        }
+      })();
+    }
+
     function addForm(svc, form) {
+      if (svc.kind === 'github') { githubForm(svc, form); return; }
       form.textContent = '';
       const inputs = {};
       if (svc.kind === 'custom') {
@@ -1610,6 +1739,7 @@
         load(true);
         return;
       }
+      if (login.code) { deviceLogin(svc, login, slot); return; }
       slot.textContent = '';
       const p = el('div', 'svc-login');
       p.appendChild(el('div', 'svc-step', '1. Otevři přihlášení a potvrď přístup.'));
