@@ -275,3 +275,16 @@ def prepis_offline(owner, chat):
         if os.path.isfile(path) and os.path.realpath(path).startswith(real_home):
             return path
     return ""
+
+
+_ZAPNUTI = {}                 # (uid, relace) → čas posledního zapnutí
+
+
+def smi_zapnout(user, rid):
+    """Zapnout stejný chat znovu jde nejdřív za 30 s — spuštění prostoru něco stojí."""
+    klic = (int(user["id"]), str(rid))
+    teď = time.time()
+    if teď - _ZAPNUTI.get(klic, 0) < 30:
+        return False
+    _ZAPNUTI[klic] = teď
+    return True

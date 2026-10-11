@@ -1678,6 +1678,11 @@ function aktivujSdileny(st) {
   if (!st.viewer) {
     st.viewer = HubCteni.openSdilene({
       host: st.pane, gw: relaceGw, notice: toast, imageUrl, openLink, copy: copyText,
+      // Majitel chat zavřel nebo mu prostor spí: znovu ho zapne a otevře.
+      zapnout: async (share) => {
+        const r = await relaceGw('/zapnout', {id: share.id});
+        toast(r && r.otevreno ? 'Chat je znovu zapnutý u ' + share.majitel + '.' : 'Chat u ' + share.majitel + ' už běží.');
+      },
       // Kopie sdíleného chatu do mého prostoru: pokračuju v něm sám, majitelův zůstává.
       pokracovat: async (share) => {
         const r = await relaceGw('/pokracovat', {id: share.id});

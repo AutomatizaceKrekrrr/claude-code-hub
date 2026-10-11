@@ -334,6 +334,28 @@ def sdilet_cteni(args):
     return data
 
 
+def sdilet_otevrit(args):
+    """Chat, který majitel zavřel (nebo mu prostor spal), se znovu otevře v jeho
+    hubu — tak jako by ho otevřel ze seznamu konverzací. Claude naváže, kde
+    skončil, a kolegové s právem psát do něj mohou psát."""
+    cid = str(args.get("chat") or "")
+    if not cteni.je_id(cid):
+        raise ToolError("Chybí číslo chatu.")
+    if _relace_session(cid):
+        return {"bezi": True, "otevreno": False}
+    path = cteni.path_for(cid)
+    if not path:
+        raise ToolError("Chat v prostoru majitele už není.")
+    from . import prenos, server
+    cwd = prenos._cwd_z_prepisu(path)
+    if not cwd or not os.path.isdir(cwd):
+        cwd = core.HOME
+    title = " ".join(str(args.get("title") or "Sdílený chat").split())[:80]
+    server.HUB.open("project", cwd, title, 120, 32, agent="claude", resume=cid)
+    core.log(f"sdílení: chat {cid[:8]} znovu otevřen ({title})")
+    return {"bezi": True, "otevreno": True}
+
+
 def sdilet_poslat(args):
     import threading
     cid = str(args.get("chat") or "")
@@ -428,6 +450,7 @@ TOOLS = {
     "prikaz": prikaz,
     "sdilet_cteni": sdilet_cteni,
     "sdilet_poslat": sdilet_poslat,
+    "sdilet_otevrit": sdilet_otevrit,
     "prenos_prijmout": prenos_prijmout,
 }
 

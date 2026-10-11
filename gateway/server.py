@@ -896,7 +896,8 @@ class Handler(BaseHTTPRequestHandler):
                 if method == "POST":
                     return self._gw_shared_change(user)
                 return self._gw_shared(user)
-            if route in ("/gw/relace", "/gw/relace/cteni", "/gw/relace/poslat", "/gw/relace/pokracovat"):
+            if route in ("/gw/relace", "/gw/relace/cteni", "/gw/relace/poslat", "/gw/relace/pokracovat",
+                        "/gw/relace/zapnout"):
                 return self._gw_relace(route, method, user)
             if route == "/gw/tym":
                 return self._gw_team(method, user)
@@ -1629,6 +1630,8 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
 
         if route == "/gw/relace/pokracovat":
             return self._relace_pokracovat(method, user)
+        if route == "/gw/relace/zapnout":
+            return self._relace_zapnout(method, user)
 
         # Čtení a psaní — vždycky přes majitelův hub, a jen když mu prostor běží
         # (kvůli dívání se neprobouzí spící prostor).
@@ -1684,6 +1687,32 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         if tool == "sdilet_cteni":
             relace.pridej_stav(result, relace.verejne(user, rid, entry), _role, user)
         return self._json(result)
+
+    def _relace_zapnout(self, method, user):
+        """Zapnout sdílený chat znovu: spustí majiteli prostor, když spal, a otevře
+        v něm chat, který zavřel. Smí každý, kdo chat sdílený vidí — spuštění
+        nikomu nic nepřidá, zprávy píše dál jen kdo má právo psát."""
+        if method != "POST" or not self._account_post_ok():
+            return self._json({"error": "Tohle jde jen z hubu."}, 403)
+        form = self._read_form()
+        rid = str(form.get("id") or "")
+        try:
+            entry, _role = relace.ziskat(user, rid)
+        except ValueError as exc:
+            return self._json({"error": str(exc)}, 403)
+        owner = shared.ACCOUNTS.by_id(entry.get("owner")) if shared.ACCOUNTS else None
+        if not owner or not self.hubs:
+            return self._json({"error": "Majitel už tu účet nemá."}, 404)
+        if not relace.smi_zapnout(user, rid):
+            return self._json({"error": "Zapínáš moc rychle, chvilku počkej."}, 429)
+        try:
+            result = mcp._hub_call(self, owner, "sdilet_otevrit",
+                                   {"chat": entry["chat"], "title": entry.get("titulek") or ""},
+                                   timeout=90)
+        except mcp.ToolError as exc:
+            return self._json({"error": str(exc)}, 502)
+        relace._log(user, "zapnuto", rid)
+        return self._json({"ok": True, **(result if isinstance(result, dict) else {})})
 
     def _relace_pokracovat(self, method, user):
         """„Pokračovat u sebe“: kopie sdíleného chatu do prostoru toho, kdo ho

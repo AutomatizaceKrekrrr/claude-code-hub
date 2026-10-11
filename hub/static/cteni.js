@@ -1712,6 +1712,20 @@
       if (r.majitel_offline) chip('Uložený chat — psát jde, až ' + r.majitel + ' zapne prostor', 'offline');
       else chip(psat ? 'Smíš psát' : 'Jen čtení', psat ? 'pise' : '');
       if (r.diva && r.diva.length) chip('Dívá se i: ' + r.diva.join(', '), 'diva');
+      if (io.zapnout && (res.bezi === false || r.majitel_offline)) {
+        const z = el('button', 'relace-chip pokracovat', r.majitel_offline ? 'Zapnout prostor ' + r.majitel : 'Zapnout chat');
+        z.title = 'Spustí ' + r.majitel + ' prostor (když spí) a otevře v něm tenhle chat — Claude naváže, ' +
+          'kde skončil. Psát do něj smí jen ten, kdo na to má právo.';
+        z.onclick = async () => {
+          z.disabled = true;
+          z.textContent = 'Zapínám…';
+          stav.textContent = 'zapínám…';
+          try { await io.zapnout(share); tik(true); }
+          catch (err) { io.notice(err.message); }
+          z.disabled = false;
+        };
+        lista.appendChild(z);
+      }
       if (io.pokracovat) {
         const b = el('button', 'relace-chip pokracovat', 'Pokračovat u sebe');
         b.title = 'Zkopíruje chat do tvého prostoru a otevře ho jako tvůj vlastní — Claude v něm naváže, ' +
