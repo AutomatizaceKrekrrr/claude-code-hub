@@ -2408,6 +2408,7 @@ def bundled_runtime():
 def update_hub():
     """Stáhne nejnovější verzi a přeinstaluje ji. Nikdy nevyhazuje."""
     was = version()
+    job_step("update", "stahuju…")
     ok, detail = _fetch_source()
     if not ok:
         return {"ok": False, "detail": detail}

@@ -877,6 +877,7 @@ class Handler(BaseHTTPRequestHandler):
                            # Poloha a stav okna s prohlížečem — drží hub, ne
                            # localStorage (port hubu se mění s každým startem).
                            "prohlizec_okno": core.CONFIG.get("prohlizec_okno") or {},
+                           "auto_update": core.CONFIG.get("auto_update", True) is not False,
                            "na_pozadi": bool(core.CONFIG.get("na_pozadi")),
                            "bez_spanku": bool(core.CONFIG.get("bez_spanku")),
                            "tray": core.CONFIG.get("tray", True) is not False,
@@ -1218,7 +1219,8 @@ class Handler(BaseHTTPRequestHandler):
                        "newtab", "extra_projects", "show_archived",
                        "agents", "default_agent", "project_agents",
                        "remote_keep_running", "dev_mode", "memory_autosave",
-                       "hlas_model", "theme", "prohlizec_okno", "na_pozadi", "bez_spanku", "tray")
+                       "hlas_model", "theme", "prohlizec_okno", "na_pozadi", "bez_spanku", "tray",
+                       "auto_update")
             updates = {k: v for k, v in payload.items() if k in allowed}
             if "theme" in updates and updates["theme"] not in ("", "dark", "light"):
                 return self._json({"error": "Neznámé téma."}, 400)

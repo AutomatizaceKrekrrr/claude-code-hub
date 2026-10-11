@@ -4038,6 +4038,7 @@ async function main() {
 
   await reload();
   themeFromState();
+  autoUpdateAtStart();
 
   $('search').oninput = (ev) => renderProjects(ev.target.value);
   $('btn-refresh').onclick = () => reload();
@@ -4477,6 +4478,121 @@ async function applyServerUpdate(card, now) {
 }
 // Nastavení → Aktualizace (settings.js) nabízí totéž tlačítkem.
 window.hubServerUpdate = () => { closeServerUpdate(); srvNewest ? showServerUpdate(true) : checkServerUpdate(); };
+
+
+/* ── Aktualizace při spuštění ────────────────────────────────────────────────
+ * Při každém startu hub sám zjistí, jestli je novější verze, stáhne ji a
+ * nainstaluje — člověk vidí jen animaci: kontroluji → stahuji → instaluji.
+ * Vypíná se v Nastavení → Aktualizace (config.auto_update).
+ * Na počítači: update-check → update (na pozadí) → restart. Na serveru verzi
+ * připravuje server (gateway/update.sh), prostor se jen přepne: uloží se taby
+ * a brána ho restartuje už na nové verzi. Pojistka proti smyčce: pro stejnou
+ * verzi se to zkusí jednou za 10 minut. */
+const AUTO_TRIED_KEY = 'hub.autoUpdateTried';
+
+function startSplash() {
+  const root = document.createElement('div');
+  root.className = 'startsplash';
+  root.innerHTML = `
+    <div class="ss-box">
+      <div class="ss-ring"><svg class="ico"><use href="#i-hub"/></svg></div>
+      <div class="ss-title">Claude Hub</div>
+      <div class="ss-text"></div>
+      <div class="ss-steps"><span data-s="check">Kontrola</span><span data-s="download">Stahování</span><span data-s="install">Instalace</span></div>
+    </div>`;
+  document.body.appendChild(root);
+  const text = root.querySelector('.ss-text');
+  const steps = [...root.querySelectorAll('.ss-steps span')];
+  return {
+    set(stage, msg) {
+      text.textContent = msg;
+      const order = ['check', 'download', 'install'];
+      const at = order.indexOf(stage);
+      steps.forEach((el) => {
+        const i = order.indexOf(el.dataset.s);
+        el.classList.toggle('on', i === at);
+        el.classList.toggle('done', i < at);
+      });
+    },
+    close() {
+      root.classList.add('out');
+      setTimeout(() => root.remove(), 400);
+    },
+  };
+}
+
+function autoTriedRecently(version) {
+  try {
+    const t = JSON.parse(sessionStorage.getItem(AUTO_TRIED_KEY) || localStorage.getItem(AUTO_TRIED_KEY) || 'null');
+    return !!(t && t.version === version && Date.now() - t.at < 10 * 60 * 1000);
+  } catch (_) { return false; }
+}
+
+function markAutoTried(version) {
+  try { localStorage.setItem(AUTO_TRIED_KEY, JSON.stringify({version, at: Date.now()})); } catch (_) { /* nevadí */ }
+}
+
+async function autoUpdateAtStart() {
+  if (STATE.config && STATE.config.auto_update === false) return;
+  const splash = startSplash();
+  const started = Date.now();
+  const finish = async () => {
+    // Aspoň chvilku, ať animace neproblikne.
+    await new Promise((r) => setTimeout(r, Math.max(0, 900 - (Date.now() - started))));
+    splash.close();
+  };
+  splash.set('check', 'Kontroluji aktualizace…');
+  try {
+    if (onServer()) {
+      let res = null;
+      try {
+        const r = await fetch('/gw/verze', {credentials: 'same-origin'});
+        if (r.ok) res = await r.json();
+      } catch (_) { /* bez sítě se nic neděje */ }
+      const newest = res && res.nejnovejsi ? bare(res.nejnovejsi) : '';
+      if (!newest || !verNewer(newest, STATE.version.version) || autoTriedRecently(newest)) return finish();
+      markAutoTried(newest);
+      splash.set('install', `Instaluji verzi ${newest}…`);
+      saveDrafts();
+      await api('prostor-snapshot', {});
+      const r = await fetch('/gw/restart', {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json', 'X-Hub-Account': '1'}, body: '{}',
+      });
+      if (!r.ok) throw new Error('Server teď neodpovídá.');
+      splash.set('install', `Přepínám na verzi ${newest}…`);
+      setTimeout(() => location.reload(), 1500);
+      return;
+    }
+    const info = await Promise.race([api('update-check'),
+      new Promise((_, no) => setTimeout(() => no(new Error('timeout')), 12000))]);
+    if (!info || !info.update_available || !info.latest || autoTriedRecently(bare(info.latest))) return finish();
+    const latest = bare(info.latest);
+    markAutoTried(latest);
+    splash.set('download', `Stahuji verzi ${latest}…`);
+    await api('update');
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 800));
+      const st = await api('update-status');
+      if (st.running) {
+        splash.set(/instal/i.test(st.step || '') ? 'install' : 'download',
+          (/instal/i.test(st.step || '') ? 'Instaluji' : 'Stahuji') + ` verzi ${latest}…`);
+        continue;
+      }
+      const r = st.result || {};
+      if (!r.ok || !r.changed) {
+        if (!r.ok) toast('Automatická aktualizace se nepovedla: ' + (r.detail || 'neznámá chyba'));
+        return finish();
+      }
+      splash.set('install', `Hotovo — restartuji na verzi ${r.now || latest}…`);
+      await api('restart');
+      return;
+    }
+  } catch (err) {
+    console.warn('automatická aktualizace:', err);
+    return finish();
+  }
+}
 
 main().catch(err => {
   console.error(err);

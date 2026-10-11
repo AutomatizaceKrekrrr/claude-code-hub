@@ -2321,6 +2321,19 @@
     infoRow.appendChild(info);
     box.appendChild(infoRow);
 
+    const autoRow = el('label', 'onb-row');
+    const autoCb = el('input');
+    autoCb.type = 'checkbox';
+    autoCb.checked = !(state.config && state.config.auto_update === false);
+    autoCb.onchange = () => { if (state.config) state.config.auto_update = autoCb.checked; save({auto_update: autoCb.checked}); };
+    autoRow.appendChild(autoCb);
+    const autoCol = el('span', 'onb-col');
+    autoCol.appendChild(el('span', null, 'Aktualizovat automaticky při spuštění'));
+    autoCol.appendChild(el('small', null, 'Při každém startu se podívá, jestli je novější verze, stáhne ji a nainstaluje. ' +
+      'Otevřené rozhovory se po restartu vrátí.'));
+    autoRow.appendChild(autoCol);
+    box.appendChild(autoRow);
+
     const status = el('div', 'set-status');
     box.appendChild(status);
 
