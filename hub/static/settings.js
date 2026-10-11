@@ -1269,7 +1269,7 @@
   /* Ikonka služby, ať ji člověk pozná na první pohled (hub/static/sluzby/,
      oficiální ikony z webů služeb — nic se nenačítá zvenku). */
   const SVC_ICONS = ['freelo', 'canva', 'ecomail', 'clockify', 'google', 'wordpress',
-                     'facebook', 'reklamy'];
+                     'facebook', 'reklamy', 'github'];
   const SVC_ICON_FILE = {facebook: 'facebook-instagram', reklamy: 'meta'};
   function svcIcon(id) {
     const key = String(id || '').toLowerCase();
@@ -1519,7 +1519,7 @@
           'Podle něj účty poznáš ty i Claude.');
       }
       // Návod krok za krokem (token Mety) — tlačítko otevře přesně tu stránku.
-      if (svc.kind === 'token' && (svc.setup || []).length) {
+      if ((svc.kind === 'token' || svc.kind === 'apikey') && (svc.setup || []).length) {
         const steps = el('ol', 'mcp-steps');
         for (const step of svc.setup) {
           const li = el('li', 'mcp-step');

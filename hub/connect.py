@@ -129,6 +129,39 @@ SERVICES = {
         "kind": "mcp",
         "url": "https://mcp.facebook.com/ads",
     },
+    # Oficiální vzdálený server GitHubu (github/github-mcp-server). Přihlášení
+    # OAuth pouští jen klientům, které má GitHub předem zaregistrované (VS Code,
+    # Copilot) — Claude Code si klienta sám nezaregistruje, a na serveru by navíc
+    # nebylo kam přesměrovat. Proto osobní token v hlavičce, jak to GitHub sám
+    # radí pro Claude Code. Ověřeno 11. 10. 2026: initialize s tokenem → 200.
+    "github": {
+        "label": "GitHub",
+        "note": "Repozitáře, kód, issues, pull requesty a GitHub Actions.",
+        "kind": "apikey",
+        "url": "https://api.githubcopilot.com/mcp/",
+        "header": "Authorization",
+        "prefix": "Bearer ",
+        "field": {"name": "account", "label": "Osobní přístupový token (github_pat_… nebo ghp_…)",
+                  "secret": True,
+                  "help": "GitHub → Settings → Developer settings → Personal access tokens. "
+                          "Doporučený je Fine-grained token jen na repozitáře, které Claude potřebuje."},
+        "warn": "Claude uvidí a smí měnit to, co token povolí. Dej mu jen ty repozitáře a "
+                "oprávnění, které potřebuje, a nastav mu platnost.",
+        "check": {"url": "https://api.github.com/user", "header": "Authorization", "prefix": "Bearer "},
+        "setup": [
+            {"title": "Vytvoř token", "button": "Otevřít GitHub",
+             "url": "https://github.com/settings/personal-access-tokens/new",
+             "text": "Pojmenuj ho (třeba Claude Hub), nastav platnost a v Repository access vyber "
+                     "repozitáře — všechny, nebo jen některé."},
+            {"title": "Vyber oprávnění", "button": "",
+             "url": "",
+             "text": "V Permissions → Repository permissions dej Read and write u Contents, Issues "
+                     "a Pull requests (a Actions, když má Claude pouštět workflow). Jen ke čtení "
+                     "stačí Read-only. Pak Generate token a token zkopíruj."},
+            {"title": "Vlož ho sem dolů", "button": "", "url": "",
+             "text": "Token GitHub ukáže jen jednou — když ho ztratíš, vytvoř nový."},
+        ],
+    },
     "google": {
         "label": "Google",
         "note": "Gmail, Disk, Kalendář, Dokumenty, Tabulky, Prezentace, "
@@ -511,6 +544,8 @@ def services(refresh=False):
                 item["missing"] = "Chybí Node.js (npx), na kterém napojení běží: https://nodejs.org"
         else:
             item["accounts"] = _mcp_accounts(sid, spec, states)
+            if spec.get("setup"):
+                item["setup"] = spec["setup"]
         if not _claude():
             item["missing"] = "Claude Code (claude) tu není nainstalovaný."
         if spec["kind"] == "google":
@@ -541,7 +576,7 @@ def _key_rejected(spec, key):
     if not check:
         return ""
     req = urllib.request.Request(check["url"], headers={
-        check["header"]: key, "User-Agent": "claude-code-hub"})
+        check["header"]: check.get("prefix", "") + key, "User-Agent": "claude-code-hub"})
     try:
         urllib.request.urlopen(req, timeout=15).close()
     except urllib.error.HTTPError as exc:
@@ -590,11 +625,16 @@ def add_account(service, label="", account="", client_id="", client_secret=""):
         key = (account or "").strip()
         if not key:
             return {"ok": False, "detail": f"Chybí {spec['field']['label']}."}
+        if spec.get("prefix") and key.lower().startswith(spec["prefix"].lower()):
+            key = key[len(spec["prefix"]):].strip()      # vložil i „Bearer “
+        bad = _key_rejected(spec, key)
+        if bad:
+            return {"ok": False, "detail": bad}
         if name in _user_servers():
             return {"ok": False, "detail": f"Účet „{slug}“ u služby {spec['label']} už je "
                                            "— zvol jiný popisek."}
         r = _run([claude, "mcp", "add", "--transport", "http", "-s", "user", name, url,
-                  "--header", f"{spec['header']}: {key}"])
+                  "--header", f"{spec['header']}: {spec.get('prefix', '')}{key}"])
         if r.returncode != 0:
             return {"ok": False, "detail": (r.stderr or r.stdout or "nepovedlo se").strip()[:300]}
         core.log(f"služby: přidán účet {name}")
