@@ -46,7 +46,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-from . import core, pty_backend
+from . import core, pty_backend, qr
 
 SERVICES = {
     "freelo": {
@@ -164,6 +164,21 @@ SERVICES = {
              "text": "Token GitHub ukáže jen jednou — když ho ztratíš, vytvoř nový. "
                      "Fine-grained token taky jde, ale Claude pak umí jen to, co mu v něm povolíš."},
         ],
+    },
+    # WhatsApp: Claude píše uživateli a ptá se ho (a čeká na odpověď) z vlastního
+    # čísla — propojené zařízení přes QR jako WhatsApp Web, knihovna Baileys.
+    # Jedno spojení na uživatele drží tools/whatsapp_mcp.mjs (démon), všechny
+    # konverzace se k němu připojují. Neoficiální klient → proto číslo pro Clauda,
+    # ne hlavní číslo uživatele.
+    "whatsapp": {
+        "label": "WhatsApp",
+        "note": "Claude ti napíše nebo se zeptá a počká na tvou odpověď.",
+        "kind": "whatsapp",
+        "field": {"name": "account", "label": "Tvoje číslo — kam má Claude psát",
+                  "help": "Třeba +420 777 123 456. Odpovědi bere Claude jen z tohohle čísla."},
+        "warn": "Claude se propojí s WhatsAppem na samostatném čísle (předplacená SIM, nebo "
+                "WhatsApp Business na druhé SIM v telefonu). Je to neoficiální klient, takže "
+                "nepropojuj svoje hlavní číslo — kdyby ho Meta zablokovala, přišel bys o něj.",
     },
     "google": {
         "label": "Google",
@@ -538,6 +553,11 @@ def services(refresh=False):
             elif not shutil.which("uvx"):
                 item["missing"] = ("Chybí uv (uvx), na kterém napojení na Google "
                                    "běží: https://docs.astral.sh/uv/")
+        elif spec["kind"] == "whatsapp":
+            item["accounts"] = _wa_accounts(states)
+            item["owner"] = "+" + _wa_config().get("owner", "") if _wa_config().get("owner") else ""
+            if not shutil.which("node") or not shutil.which("npm"):
+                item["missing"] = "Chybí Node.js (node a npm), na kterém WhatsApp běží: https://nodejs.org"
         elif spec["kind"] == "custom":
             item["accounts"] = _custom_accounts(states, claimed)
         elif spec["kind"] == "token":
@@ -602,6 +622,10 @@ def add_account(service, label="", account="", client_id="", client_secret=""):
         return google_login_start()
     if spec["kind"] == "custom":
         return add_custom(label, account, client_id, client_secret)
+    if spec["kind"] == "whatsapp":
+        if not _claude():
+            return {"ok": False, "detail": "Claude Code (claude) tu není nainstalovaný."}
+        return whatsapp_add(account)
     if spec["kind"] == "github":
         if not _claude():
             return {"ok": False, "detail": "Claude Code (claude) tu není nainstalovaný."}
@@ -688,6 +712,8 @@ def remove_account(service, name):
         core.log("služby: odebrán Google účet")
         _recheck()
         return {"ok": True, "detail": f"Google účet {name} odebrán."}
+    if spec["kind"] == "whatsapp":
+        return whatsapp_remove()
     if spec["kind"] == "github" and name.startswith("github-") and name in _user_servers():
         return github_remove(name)
     if spec["kind"] == "custom":
@@ -1208,6 +1234,272 @@ def github_upgrade():
                  "info" if r.returncode == 0 else "warn")
 
 
+# ── WhatsApp: démon s jedním spojením + MCP pro každou konverzaci ────────────
+WA_MCP_NAME = "whatsapp"
+WA_BAILEYS = "baileys@7.0.0-rc14"     # pevná verze: cizí kód se nemá měnit pod rukama
+WA_DIR = os.path.join(core.CLAUDE_DIR, "whatsapp")
+
+
+def _wa_script():
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, "tools", "whatsapp_mcp.mjs")
+
+
+def _wa_call(name, body=None, timeout=10):
+    """Volání démona (127.0.0.1 + tajný žeton z daemon.json); None, když neběží."""
+    try:
+        with open(os.path.join(WA_DIR, "daemon.json"), encoding="utf-8") as fh:
+            info = json.load(fh)
+        req = urllib.request.Request(f"http://127.0.0.1:{int(info['port'])}/{name}",
+                                     data=json.dumps(body or {}).encode("utf-8"), method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "X-Token": str(info["token"])})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _wa_linked():
+    return os.path.isfile(os.path.join(WA_DIR, "auth", "creds.json"))
+
+
+def _wa_config():
+    try:
+        with open(os.path.join(WA_DIR, "config.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def _wa_save_config(data):
+    os.makedirs(WA_DIR, mode=0o700, exist_ok=True)
+    tmp = os.path.join(WA_DIR, "config.json.tmp")
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(data, fh, indent=2)
+    os.replace(tmp, os.path.join(WA_DIR, "config.json"))
+
+
+def _wa_number(text):
+    """„+420 777 123 456" → „420777123456"; devět číslic = české číslo."""
+    num = re.sub(r"\D", "", text or "")
+    if num.startswith("00"):
+        num = num[2:]
+    if len(num) == 9:
+        num = "420" + num
+    return num if 10 <= len(num) <= 15 else ""
+
+
+def _wa_installed():
+    pkg = os.path.join(WA_DIR, "node_modules", "baileys", "package.json")
+    try:
+        with open(pkg, encoding="utf-8") as fh:
+            return json.load(fh).get("version") == WA_BAILEYS.split("@", 1)[1]
+    except (OSError, ValueError):
+        return False
+
+
+def _wa_install():
+    """Knihovna do ~/.claude/whatsapp/node_modules (na serveru je kód hubu jen ke čtení)."""
+    npm = shutil.which("npm")
+    if not npm:
+        return "Chybí Node.js (npm): https://nodejs.org"
+    os.makedirs(WA_DIR, mode=0o700, exist_ok=True)
+    pkg = os.path.join(WA_DIR, "package.json")
+    if not os.path.isfile(pkg):
+        with open(pkg, "w", encoding="utf-8") as fh:
+            fh.write('{"private": true}\n')
+    r = _run([npm, "install", "--prefix", WA_DIR, "--no-audit", "--no-fund", "--omit=dev",
+              "--loglevel=error", WA_BAILEYS], timeout=600)
+    if r.returncode != 0 or not _wa_installed():
+        return "Knihovna WhatsAppu se nenainstalovala: " + \
+            (_last_line(r.stderr or r.stdout or "") or "npm selhal")
+    return ""
+
+
+def _wa_spawn(pair=False):
+    node = shutil.which("node")
+    if not node:
+        return False
+    argv = [node, _wa_script(), "daemon"] + (["--pair"] if pair else [])
+    kwargs = {"cwd": WA_DIR, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+              "stderr": subprocess.DEVNULL}
+    if core.IS_WINDOWS:
+        kwargs["creationflags"] = subprocess.DETACHED_PROCESS | core._NO_WINDOW
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(argv, **kwargs)
+        return True
+    except OSError:
+        return False
+
+
+def _wa_stop():
+    if _wa_call("stop", timeout=5) is None:
+        return
+    for _ in range(30):
+        time.sleep(0.2)
+        if _wa_call("status", timeout=2) is None:
+            return
+
+
+def _wa_register():
+    """MCP server `whatsapp` (stdio) — každá konverzace si pustí tenký most."""
+    claude = _claude()
+    if WA_MCP_NAME in _user_servers():
+        _run([claude, "mcp", "remove", WA_MCP_NAME, "-s", "user"], 30)
+    r = _run([claude, "mcp", "add", "-s", "user", WA_MCP_NAME, "--",
+              shutil.which("node") or "node", _wa_script(), "mcp"])
+    return "" if r.returncode == 0 else (r.stderr or r.stdout or "nepovedlo se").strip()[:300]
+
+
+WA_WELCOME = ("Ahoj, tady Claude 👋 Odsud ti budu psát, když budu něco potřebovat "
+              "nebo bude hotovo. Na otázky odpovídej sem.")
+
+
+class _WhatsappLogin:
+    """Instalace knihovny → démon v režimu párování → QR do nastavení →
+    po naskenování registrace MCP a uvítací zpráva (ověří celou cestu)."""
+    kind = "whatsapp"
+
+    def __init__(self):
+        self.id = secrets.token_urlsafe(12)
+        self.started = time.time()
+        self.done = False
+        self.ok = False
+        self.message = "Připravuju…"
+        self.qr = ""
+        self._qr_text = ""
+        self._stop = False
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def extra(self):
+        return {"qr": self.qr, "phase": self.message if not self.done else ""}
+
+    def _finish(self, ok, message):
+        with _LOCK:
+            self.done, self.ok, self.message = True, ok, message
+
+    def _run(self):
+        try:
+            if not _wa_installed():
+                self.message = "Instaluju knihovnu WhatsAppu (poprvé to trvá kolem minuty)…"
+                bad = _wa_install()
+                if bad:
+                    return self._finish(False, bad)
+            self.message = "Spouštím spojení…"
+            _wa_stop()
+            shutil.rmtree(os.path.join(WA_DIR, "auth"), ignore_errors=True)
+            if not _wa_spawn(pair=True):
+                return self._finish(False, "Spojení s WhatsAppem nejde spustit (chybí node?).")
+            end = time.time() + LOGIN_TTL
+            while time.time() < end and not self._stop:
+                time.sleep(1)
+                st = _wa_call("status", timeout=3)
+                if not st:
+                    continue
+                state = st.get("state")
+                if state == "qr" and st.get("qr") and st["qr"] != self._qr_text:
+                    self._qr_text = st["qr"]
+                    with _LOCK:
+                        self.qr = qr.svg(st["qr"], quiet=2, scale=5)
+                        self.message = "Naskenuj QR telefonem s Claudovým číslem."
+                elif state == "open":
+                    with _LOCK:
+                        self.qr = ""
+                        self.message = "Propojeno, ověřuju zprávou…"
+                    bad = _wa_register()
+                    if bad:
+                        return self._finish(False, bad)
+                    sent = _wa_call("send", {"text": WA_WELCOME}, timeout=60) or {}
+                    write_claude_md()
+                    _recheck()
+                    me = st.get("me") or ""
+                    core.log(f"služby: WhatsApp propojený jako {me}")
+                    if not sent.get("ok"):
+                        return self._finish(True, f"WhatsApp {me} propojený, ale uvítací zprávu "
+                                            f"se poslat nepovedlo: {sent.get('error') or 'bez odpovědi'}")
+                    return self._finish(True, f"WhatsApp {me} propojený — poslal jsem ti "
+                                        f"zkušební zprávu na {sent.get('sent_to')}.")
+                elif state == "logged_out":
+                    return self._finish(False, st.get("detail") or "WhatsApp propojení odmítl.")
+            if not self._stop:
+                _wa_stop()
+                self._finish(False, "QR nikdo nenaskenoval — začni znovu.")
+        except Exception as exc:          # vlákno nesmí umřít potichu
+            self._finish(False, f"Propojení se nepovedlo: {exc}")
+
+    def paste(self, url, wait=0):
+        pass
+
+    def cancel(self):
+        self._stop = True
+        if not self.done:
+            _wa_stop()
+
+
+def whatsapp_add(number):
+    owner = _wa_number(number)
+    if not owner:
+        return {"ok": False, "detail": "Tohle nevypadá jako telefonní číslo — napiš ho i s předvolbou, "
+                                       "třeba +420 777 123 456."}
+    if not shutil.which("node") or not shutil.which("npm"):
+        return {"ok": False, "detail": "Chybí Node.js (node a npm): https://nodejs.org"}
+    _wa_save_config({**_wa_config(), "owner": owner})
+    # Už propojený a běží → jen jiné číslo příjemce, nic se znovu neskenuje.
+    st = _wa_call("status", timeout=3) or {}
+    if _wa_linked() and st.get("state") == "open" and WA_MCP_NAME in _user_servers():
+        write_claude_md()
+        return {"ok": True, "name": WA_MCP_NAME,
+                "login": {"done": True, "message": f"Claude teď píše na +{owner}."}}
+    _cleanup()
+    login = _WhatsappLogin()
+    with _LOCK:
+        _LOGINS[login.id] = login
+    return {"ok": True, "name": WA_MCP_NAME,
+            "login": {"id": login.id, "qr": "", "phase": login.message}}
+
+
+def whatsapp_remove():
+    """Odpojí zařízení na straně WhatsAppu (zmizí z Propojených zařízení),
+    zastaví démona a zruší napojení v Claude Code. Knihovna zůstane."""
+    if _wa_call("logout", timeout=20) is None:
+        shutil.rmtree(os.path.join(WA_DIR, "auth"), ignore_errors=True)
+    for name in ("inbox.json", "inbox.json.read"):
+        try:
+            os.remove(os.path.join(WA_DIR, name))
+        except OSError:
+            pass
+    if WA_MCP_NAME in _user_servers():
+        _run([_claude(), "mcp", "remove", WA_MCP_NAME, "-s", "user"], 30)
+    write_claude_md()
+    core.log("služby: WhatsApp odpojený")
+    _recheck()
+    return {"ok": True, "detail": "WhatsApp odpojený — zmizí i z Propojených zařízení v telefonu."}
+
+
+def _wa_accounts(states):
+    if WA_MCP_NAME not in _user_servers():
+        return []
+    cfg = _wa_config()
+    owner = "+" + cfg["owner"] if cfg.get("owner") else ""
+    st = _wa_call("status", timeout=2)
+    if st and st.get("state") == "open":
+        state, status = "ok", "připojeno" + (f" · píše na {owner}" if owner else "")
+    elif st and st.get("state") in ("logged_out", "not_linked"):
+        state, status = "fail", "odpojeno — propoj znovu"
+    elif not _wa_linked():
+        state, status = "fail", "nepropojeno — propoj znovu"
+    elif st:
+        state, status = "unknown", "připojuju se…"
+    else:
+        state, status = "ok", "spí — probudí se, až ho Claude použije" + \
+            (f" · píše na {owner}" if owner else "")
+    label = (st or {}).get("me") or "WhatsApp"
+    return [{"name": WA_MCP_NAME, "label": label, "state": state, "status": status, "detail": ""}]
+
+
 def _cleanup():
     now = time.time()
     with _LOCK:
@@ -1265,7 +1557,10 @@ def login_status(login_id):
     login = _LOGINS.get(login_id)
     if not login:
         return {"done": True, "ok": False, "message": "Přihlášení vypršelo — začni znovu."}
-    return {"done": login.done, "ok": login.ok, "message": login.message}
+    out = {"done": login.done, "ok": login.ok, "message": login.message}
+    if hasattr(login, "extra"):
+        out.update(login.extra())
+    return out
 
 
 def login_finish(login_id, url):
@@ -1366,6 +1661,12 @@ def _sync_on_start():
     except Exception as exc:
         core.log(f"napojení Google při startu: {exc}", "warn")
     try:
+        # Odpovědi a zprávy chodí, i když zrovna žádná konverzace WhatsApp nepoužívá.
+        if WA_MCP_NAME in _user_servers() and _wa_linked() and _wa_call("status", timeout=3) is None:
+            _wa_spawn()
+    except Exception as exc:
+        core.log(f"napojení WhatsApp při startu: {exc}", "warn")
+    try:
         github_upgrade()
     except Exception as exc:
         core.log(f"napojení GitHub při startu: {exc}", "warn")
@@ -1410,6 +1711,16 @@ def _napojeni_block():
                   f"se {default}. Jiný e-mail zadej, jen když uživatel chce jiný",
                   "z napojených účtů. Nikdy ho nehádej podle účtu Claude ani podle",
                   "e-mailů jiných lidí — pro ně přihlášení není a nástroj selže."]
+    if WA_MCP_NAME in servers:
+        owner = _wa_config().get("owner")
+        lines += ["",
+                  "**WhatsApp:** `mcp__whatsapp__ask` pošle uživateli otázku na WhatsApp"
+                  + (f" (+{owner})" if owner else "") + " a **počká na odpověď**,",
+                  "`send_message` pošle zprávu nebo soubor, `read_messages` přečte, co",
+                  "uživatel napsal mimo otázky. Použij, když o to uživatel požádá („napiš",
+                  "mi“, „zeptej se na WhatsAppu“), nebo když pracuješ sám a potřebuješ",
+                  "rozhodnutí a uživatel v terminálu neodpovídá. Piš krátce a srozumitelně",
+                  "bez kontextu obrazovky; nespamuj — jedna zpráva na jednu událost."]
     github = [n for n in servers if n.startswith("github-")]
     if github:
         lines += ["",

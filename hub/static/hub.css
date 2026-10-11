@@ -829,6 +829,8 @@ body { display: flex; flex-direction: column; }
   font-family: var(--mono, ui-monospace, monospace); font-size: 20px;
   letter-spacing: 3px; text-align: center; font-weight: 600;
 }
+.svc-qr { align-self: center; background: #fff; padding: 8px; border-radius: 8px; line-height: 0; }
+.svc-qr svg { width: 240px; height: 240px; display: block; }
 .svc-tech { margin-top: 10px; }
 
 /* ── dotaz jako karta ────────────────────────────────────────────────────── */

@@ -1429,7 +1429,9 @@
         again.onclick = async () => {
           again.disabled = true;
           try {
-            const r = (svc.kind === 'google' || svc.kind === 'github')
+            const r = svc.kind === 'whatsapp'
+              ? await io.api('connect', {action: 'add', service: svc.id, account: svc.owner || ''})
+              : (svc.kind === 'google' || svc.kind === 'github')
               ? await io.api('connect', {action: 'add', service: svc.id})
               : await io.api('connect', {action: 'login', name: acc.name});
             startLogin(svc, r, slot);
@@ -1444,6 +1446,7 @@
       del.title = 'Odebrat účet';
       del.onclick = async () => {
         const question = svc.kind === 'custom' ? `Odebrat napojení ${acc.label}?`
+          : svc.kind === 'whatsapp' ? `Odpojit WhatsApp ${acc.label}? Claude ti přestane psát a zařízení zmizí z Propojených zařízení v telefonu.`
           : svc.kind === 'github' ? `Odebrat GitHub ${acc.label}? Odhlásí se i gh, takže tady přestane fungovat i git push na GitHub.`
           : `Odebrat účet ${acc.label} (${svc.label})?`;
         if (!(await HubDialog.confirm(question, {title: 'Odebrat napojení', ok: 'Odebrat'}))) return;
@@ -1636,6 +1639,64 @@
       })();
     }
 
+    /* WhatsApp: hub nainstaluje knihovnu, pustí spojení a ukazuje QR, dokud ho
+       telefon s Claudovým číslem nenaskenuje (QR se každých ~20 s mění). */
+    function whatsappLogin(svc, login, slot) {
+      slot.textContent = '';
+      const p = el('div', 'svc-login');
+      p.appendChild(el('div', 'svc-step',
+        'Na telefonu s Claudovým číslem: WhatsApp → ⋮ / Nastavení → Propojená zařízení → ' +
+        'Propojit zařízení, a naskenuj kód:'));
+      const qrBox = el('div', 'svc-qr');
+      p.appendChild(qrBox);
+      const status = el('div', 'set-note svc-status', login.phase || 'Připravuju…');
+      p.appendChild(status);
+      const cancel = el('button', 'linkbtn', 'Zrušit');
+      p.appendChild(cancel);
+      slot.appendChild(p);
+      let stopped = false;
+      let shown = '';
+      const show = (svg) => {
+        if (svg === shown) return;
+        shown = svg;
+        qrBox.innerHTML = svg || '';          // SVG z hub/qr.py, žádný cizí vstup
+        qrBox.hidden = !svg;
+      };
+      show(login.qr || '');
+      cancel.onclick = () => {
+        stopped = true;
+        io.api('connect', {action: 'cancel', id: login.id}).catch(() => {});
+        slot.textContent = '';
+        load(false);
+      };
+      (async () => {
+        while (!stopped) {
+          await wait(1500);
+          if (stopped || !p.isConnected) break;
+          let st;
+          try {
+            st = await io.api('connect', {action: 'status', id: login.id});
+          } catch (_) { continue; }
+          if (stopped) break;
+          if (!st.done) {
+            show(st.qr || '');
+            if (st.phase) status.textContent = st.phase;
+            continue;
+          }
+          stopped = true;
+          if (st.ok) {
+            io.toast(st.message || 'WhatsApp propojený.');
+            slot.textContent = '';
+            load(true);
+          } else {
+            show('');
+            status.className = 'set-warn svc-status';
+            status.textContent = st.message || 'Propojení se nepovedlo.';
+          }
+        }
+      })();
+    }
+
     function addForm(svc, form) {
       if (svc.kind === 'github') { githubForm(svc, form); return; }
       form.textContent = '';
@@ -1643,6 +1704,10 @@
       if (svc.kind === 'custom') {
         inputs.label = field(form, 'Název', 'třeba Notion',
           'Podle něj napojení poznáš ty i Claude (jeho nástroje budou mcp__název__…).');
+      } else if (svc.kind === 'whatsapp') {
+        form.appendChild(el('div', 'set-note',
+          'Na telefonu s Claudovým číslem pak naskenuješ QR (WhatsApp → Propojená zařízení). ' +
+          'Claude ti potom píše jako normální kontakt a odpovědi bere jen z tvého čísla.'));
       } else if (svc.kind !== 'google') {
         inputs.label = field(form, 'Popisek účtu', 'třeba firma nebo osobní',
           'Podle něj účty poznáš ty i Claude.');
@@ -1692,6 +1757,7 @@
       }
       const goText = svc.kind === 'google' ? 'Přihlásit Google účet'
         : svc.kind === 'custom' ? 'Přidat'
+        : svc.kind === 'whatsapp' ? 'Pokračovat k QR kódu'
         : (svc.kind === 'apikey' || svc.kind === 'token') ? 'Napojit' : 'Přihlásit';
       const go = el('button', 'btn primary', goText);
       form.appendChild(go);
@@ -1740,6 +1806,7 @@
         return;
       }
       if (login.code) { deviceLogin(svc, login, slot); return; }
+      if (svc.kind === 'whatsapp') { whatsappLogin(svc, login, slot); return; }
       slot.textContent = '';
       const p = el('div', 'svc-login');
       p.appendChild(el('div', 'svc-step', '1. Otevři přihlášení a potvrď přístup.'));
