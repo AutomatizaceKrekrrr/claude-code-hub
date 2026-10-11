@@ -1174,6 +1174,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(run(payload.get("id")))
                 except ValueError as exc:
                     return self._json({"error": str(exc)}, 400)
+            if action in ("rozhodnout", "zrusit-povoleni"):
+                # Souhlas dává člověk tady v appce na počítači, nebo v prostoru přes
+                # bránu (cookie) — ne prostor sám, ve kterém běží Claude.
+                if core.on_gateway():
+                    return self._json({"error": "O souhlasu se rozhoduje v appce na počítači."}, 400)
+                try:
+                    if action == "zrusit-povoleni":
+                        return self._json(pocitac.revoke_grant())
+                    return self._json(pocitac.decide(payload.get("id"), str(payload.get("volba") or "")))
+                except ValueError as exc:
+                    return self._json({"error": str(exc)}, 400)
             if "access" in payload:
                 if core.on_gateway():
                     return self._json({"error": "Tohle se nastavuje v appce na počítači."}, 400)

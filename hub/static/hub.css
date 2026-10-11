@@ -4021,3 +4021,13 @@ select.set-input.eleven-model { width: auto; min-width: 15rem; max-width: 100%; 
 .ss-steps span.on { background: var(--accent, #e0833a); color: #fff; }
 .ss-steps span.done { color: var(--accent, #e0833a); }
 @media (prefers-reduced-motion: reduce) { .ss-ring::before { animation-duration: 3s; } }
+
+/* Souhlas s úkolem počítače (pocitac.js, showApproval) */
+.pc-asks { position: fixed; right: 16px; bottom: 16px; z-index: 9000; display: flex; flex-direction: column; gap: 10px; max-width: min(420px, calc(100vw - 32px)); }
+.pc-ask-card { background: var(--bg-elev, #161b22); border: 1px solid var(--accent, #e0833a); border-radius: 12px; padding: 14px; box-shadow: 0 8px 28px rgba(0,0,0,.4); }
+.pc-ask-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; }
+.pc-ask-head .ico { width: 18px; height: 18px; color: var(--accent, #e0833a); }
+.pc-ask-what { margin: 0 0 8px; padding: 8px 10px; background: var(--bg-card, rgba(128,128,128,.15)); border-radius: 8px; font-size: 12.5px; white-space: pre-wrap; word-break: break-word; max-height: 140px; overflow: auto; }
+.pc-ask-note { font-size: 11.5px; color: var(--muted, #8b949e); margin-bottom: 10px; }
+.pc-ask-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.pc-grant { display: flex; align-items: center; gap: 10px; margin-top: 8px; font-size: 13px; }

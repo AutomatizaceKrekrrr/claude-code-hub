@@ -94,10 +94,10 @@ sahat na tenhle počítač (`hub/pocitac.py`). To je vědomě díra ven, takže:
 
 | | |
 |---|---|
-| **Vypnuto, dokud se nezapne** | volí se na počítači: vypnuto / jen čtení / plný přístup. Dokud je vypnuto, hub se na úkoly vůbec neptá. |
+| **Vypnuto, dokud se nezapne** | volí se na počítači nebo z prostoru (přihlášený člověk, ne Claude): vypnuto / jen čtení / ptát se na souhlas / plný přístup. Dokud je vypnuto, hub se na úkoly vůbec neptá. |
 | **Spojení staví počítač** | dlouhé dotazy po HTTPS s tokenem zařízení; na počítači se neotevírá žádný port |
 | **Úroveň se ověřuje u každého úkolu** | podle toho, co je v `hub-config.json` teď, ne podle toho, co tvrdí brána |
-| **Server ji změnit neumí** | stránka prostoru zná adresu i token hubu na počítači (`#local=`, cesta zpátky). POST na `/api` proto musí mít `Origin` stránky hubu — z prostoru neprojde. |
+| **Claude ze serveru ji změnit neumí** | souhlas s úkolem a změna stupně jdou z prostoru jen přes bránu s přihlašovací cookie a hlavičkou stránky hubu (`/gw/pocitac/rozhodnout`, `/pristup`) — žeton prostoru, který má Claude, je nezná; počítač změnu provede a ukáže upozornění. V appce na počítači: stránka prostoru zná adresu i token hubu na počítači (`#local=`, cesta zpátky). POST na `/api` proto musí mít `Origin` stránky hubu — z prostoru neprojde. |
 | **Přihlášení appky a Claude Code se nečte** | `hub-config.json` (token zařízení) a `.credentials.json` odmítne čtení, hledání, stažení i zápis. S tokenem zařízení by si Claude v prostoru sám potvrdil, co potvrzuje člověk (firemní Obsidian). |
 | **Každý úkol do logu** | `hub.log` a posledních pár v ⚙ → Účet |
 | **Úkol na později spouští počítač** | zadání, které Claude z prostoru nechal vypnutému počítači, otevře tab s Claude Code sám jen s plným přístupem — ten už stejně dovoluje příkazy. S přístupem jen ke čtení čeká na *Spustit* v okně appky (POST s `Origin` hubu, prostor ho nespustí). Tab běží v režimu oprávnění, který má Claude Code nastavený, a o souhlas se ptá jako jindy. |

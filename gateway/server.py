@@ -844,6 +844,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._pocitac_poll(method)
             if route == "/gw/pocitac/vysledek":
                 return self._pocitac_reply(method)
+            if route == "/gw/pocitac/schvaleni":
+                return self._pocitac_schvaleni(method)
             if route == "/gw/pocitac/volani":
                 return self._pocitac_call(method)
             if route == "/gw/pocitac/ukol":
@@ -906,6 +908,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._gw_restart(method, user)
             if route == "/gw/verze":
                 return self._gw_verze(user)
+            if route in ("/gw/pocitac/rozhodnout", "/gw/pocitac/pristup"):
+                return self._pocitac_clovek(route, method, user)
             if route == "/gw/pocitac":
                 # Které počítače jsou k prostoru připojené — štítek v hlavičce —
                 # a kde jsou úkoly, které jim Claude nechal na později.
@@ -1781,7 +1785,7 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
                            "version": __version__,
                            # Co brána umí navíc — appka podle toho pozná, jestli
                            # se má ptát třeba na most na počítač.
-                           "features": ["pocitac", "predplatne", "ukoly"],
+                           "features": ["pocitac", "predplatne", "ukoly", "schvalovani"],
                            "host": self._public_host()})
 
     def _gw_me(self):
@@ -1926,11 +1930,45 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
             return self._json({"error": str(exc)}, 400)
         try:
             return self._json({"tasks": tasks,
+                               "prikazy": broker.take_directives(user["id"], info.get("id")),
                                "ukoly": broker.ukoly_offer(user["id"], info.get("id"))})
         except OSError:
             # Počítač mezitím spojení zavřel — úkoly nesmí propadnout.
             broker.requeue(user["id"], info.get("id"), tasks)
             raise
+
+    def _pocitac_schvaleni(self, method):
+        """Počítač hlásí, na co čeká od člověka (žádost o souhlas) — ať se to
+        ukáže v prostoru hned, ne až s příštím dotazem."""
+        if method != "POST":
+            return self._json({"error": "Jen POST."}, 405)
+        user = self._bearer()
+        if not user:
+            return self._json({"error": "Neplatný token."}, 401)
+        form = self._read_form()
+        ok = self.server.pocitac.update_pending(user["id"], form.get("computer"),
+                                                form.get("pending"), form.get("grants"))
+        return self._json({"ok": ok})
+
+    def _pocitac_clovek(self, route, method, user):
+        """Rozhodnutí člověka z prostoru: souhlas s úkolem počítače, změna přístupu.
+
+        Jen s přihlašovací cookie a jen ze stránky hubu (_account_post_ok). Claude
+        v prostoru má jen žeton prostoru, který tyhle adresy nezná — nemůže si
+        tedy souhlas dát sám."""
+        if method != "POST":
+            return self._json({"error": "Jen POST."}, 405)
+        form = self._read_form()
+        if not self._account_post_ok():
+            return self._json({"error": "Tohle jde jen ze stránky hubu."}, 403)
+        broker = self.server.pocitac
+        if route.endswith("/rozhodnout"):
+            out = broker.decide(user["id"], str(form.get("computer") or ""),
+                                form.get("id"), str(form.get("volba") or ""))
+        else:
+            out = broker.set_access(user["id"], str(form.get("computer") or ""),
+                                    str(form.get("level") or ""))
+        return self._json(out, 200 if out.get("ok") else 400)
 
     def _pocitac_reply(self, method):
         if method != "POST":

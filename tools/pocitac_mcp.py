@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 
 NAME = "pocitac"
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 UKOLY_OD = "2.15.0"                   # appka na počítači, která úkoly na později umí
 MAX_TRANSFER = 15 * 1024 * 1024       # stejný strop jako na počítači
 MAX_TEXT = 80 * 1024                  # víc textu naráz Claudovi nepomůže
@@ -45,6 +45,16 @@ v prostoru uživatele.
 - Počítač patří uživateli: mazání, přepisování, instalace a jiné změny tam dělej
   jen na jeho výslovné přání. Hesla, klíče a přihlašovací údaje z počítače
   nevypisuj ani nekopíruj na server, pokud o to výslovně nepožádá.
+- Přístup má tři stupně: jen čtení, „ptá se na souhlas“ a plný. Při „ptá se na souhlas“
+  se zápis, spuštění příkazu, snímek obrazovky, schránka a otevírání souborů provede až
+  poté, co uživatel v aplikaci (na počítači nebo tady v Nastavení → Účet → Tvůj počítač) klikne
+  Povolit; čeká se na to až dvě minuty. Když to uživatel zamítne nebo nestihne, nic se
+  nestalo — nepokoušej se to obejít, zeptej se ho. Souhlas „na 30 minut“ platí pro všechny
+  tyhle úkoly najednou. Před větším zásahem radši řekni, co chceš udělat, ať ví, k čemu
+  souhlas dává.
+- Snímek obrazovky (`snimek_obrazovky`) a schránka ukazují, co má uživatel právě před sebou
+  — používej je jen tehdy, když to opravdu potřebuješ, a nic z toho nepřepisuj dál,
+  než je nutné.
 - Když počítač není připojený, řekni uživateli, ať má na počítači otevřenou appku
   Claude Code Hub a v Nastavení → Účet zapnutý přístup pro Clauda ze serveru.
 - Když připojený není a má se na něm něco udělat, nemusí se čekat: co jde, připrav
@@ -148,6 +158,36 @@ TOOLS = [
      "description": "Zruší úkol, který si počítač ještě nevyzvedl.",
      "inputSchema": {"type": "object", "required": ["id"], "properties": {
          "id": {"type": "string", "description": "Id úkolu z `ukoly_pro_pocitac`."}}}},
+    {"name": "snimek_obrazovky",
+     "description": "Snímek celé obrazovky počítače uživatele jako obrázek. Ukáže, co má uživatel "
+                    "před sebou — při přístupu „ptá se na souhlas“ potřebuje jeho souhlas.",
+     "inputSchema": {"type": "object", "properties": {"pocitac": _PC}}},
+    {"name": "schranka_cist",
+     "description": "Přečte text, který má uživatel ve schránce (Ctrl+C) na počítači. Potřebuje souhlas.",
+     "inputSchema": {"type": "object", "properties": {"pocitac": _PC}}},
+    {"name": "schranka_zapsat",
+     "description": "Zapíše text do schránky počítače uživatele, ať ho může vložit (Ctrl+V). Potřebuje souhlas.",
+     "inputSchema": {"type": "object", "required": ["text"], "properties": {
+         "text": {"type": "string"}, "pocitac": _PC}}},
+    {"name": "otevrit",
+     "description": "Otevře na počítači uživatele soubor, složku nebo adresu http(s) ve výchozí "
+                    "aplikaci (prohlížeč, prohlížeč PDF, správce souborů…). Potřebuje souhlas.",
+     "inputSchema": {"type": "object", "required": ["co"], "properties": {
+         "co": {"type": "string", "description": "Cesta na počítači nebo adresa http(s)."},
+         "pocitac": _PC}}},
+    {"name": "oznameni",
+     "description": "Ukáže uživateli krátké oznámení na jeho počítači (v okně appky a v systému) — "
+                    "třeba že je dlouhý úkol hotový. Nic nemění, souhlas nechce.",
+     "inputSchema": {"type": "object", "required": ["text"], "properties": {
+         "text": {"type": "string", "description": "Nejvýš pár vět."},
+         "nadpis": {"type": "string"}, "pocitac": _PC}}},
+    {"name": "procesy",
+     "description": "Seznam běžících programů na počítači uživatele (nejvíc vytěžující první). "
+                    "Jen čtení, souhlas nechce.",
+     "inputSchema": {"type": "object", "properties": {
+         "jmeno": {"type": "string", "description": "Jen procesy, které toto jméno obsahují."},
+         "limit": {"type": "integer", "description": "Nejvýš kolik řádků (výchozí 60)."},
+         "pocitac": _PC}}},
     {"name": "nahrat",
      "description": "Zkopíruje soubor (i binární, do 15 MB) ze serveru na počítač uživatele. "
                     "Potřebuje plný přístup.",
@@ -174,6 +214,8 @@ def gateway(op, args=None, computer="", wait=150):
     if not url or not token:
         raise Failed("Most na počítač tu není — prostor ho od brány nedostal. "
                      "Běží tenhle Claude opravdu v prostoru na serveru s Code Hubem?")
+    if op not in ("list", "ukol-novy", "ukol-zrusit"):
+        wait += 130              # při „ptá se na souhlas“ brána čeká i na rozhodnutí člověka
     body = json.dumps({"op": op, "args": args or {}, "computer": computer or ""}).encode("utf-8")
     req = urllib.request.Request(url + "/gw/pocitac/volani", data=body, method="POST",
                                  headers={"Content-Type": "application/json",
@@ -228,7 +270,7 @@ def _server_path(raw):
 def t_pocitace(a):
     data = gateway("list", wait=20)
     comps = data.get("computers") or []
-    online = [c for c in comps if c.get("online") and c.get("access") in ("cteni", "vse")]
+    online = [c for c in comps if c.get("online") and c.get("access") in ("cteni", "ptat", "vse")]
     waiting = sum(1 for u in data.get("ukoly") or [] if u.get("state") == "ceka")
     later = f"Na počítač čeká úkolů na později: {waiting} (ukoly_pro_pocitac)." if waiting else ""
     if not online:
@@ -400,7 +442,7 @@ def t_nechat_ukol(a):
     target = str(ukol.get("computer") or "").casefold()
     mine = [c for c in comps if not target or target in (str(c.get("name")).casefold(),
                                                          str(c.get("id")).casefold())]
-    online = [c for c in mine if c.get("online") and c.get("access") in ("cteni", "vse")]
+    online = [c for c in mine if c.get("online") and c.get("access") in ("cteni", "ptat", "vse")]
     if online:
         out.append(f"Počítač {online[0].get('name')} je připojený — vyzvedne si ho hned.")
     else:
@@ -439,11 +481,54 @@ def t_zrusit_ukol(a):
     return f"Úkol „{ukol.get('title')}\" je zrušený, na počítač už nepřijde."
 
 
+def t_snimek(a):
+    res, pc = on_pc("screenshot", {}, a.get("pocitac"), wait=300)
+    if not res.get("data"):
+        raise Failed("Počítač snímek neposlal.")
+    return [{"type": "text", "text": f"Obrazovka počítače {pc} ({_size(res.get('bytes'))})."},
+            {"type": "image", "data": res["data"], "mimeType": res.get("mime") or "image/png"}]
+
+
+def t_schranka_cist(a):
+    res, pc = on_pc("clipboard_get", {}, a.get("pocitac"))
+    text = res.get("text") or ""
+    return (f"Schránka počítače {pc}" + (" (zkráceno)" if res.get("truncated") else "") + ":\n"
+            + (text if text else "(prázdná)"))
+
+
+def t_schranka_zapsat(a):
+    if not isinstance(a.get("text"), str):
+        raise Failed("Chybí text.")
+    res, pc = on_pc("clipboard_set", {"text": a["text"]}, a.get("pocitac"))
+    return f"Do schránky počítače {pc} zapsáno {res.get('chars')} znaků."
+
+
+def t_otevrit(a):
+    res, pc = on_pc("open", {"target": a.get("co") or ""}, a.get("pocitac"))
+    return f"Na počítači {pc} otevřeno: {res.get('opened')}."
+
+
+def t_oznameni(a):
+    on_pc("notify", {"message": a.get("text") or "", "title": a.get("nadpis") or "Claude"}, a.get("pocitac"))
+    return "Oznámení je na počítači zobrazené."
+
+
+def t_procesy(a):
+    args = {"name": a.get("jmeno") or ""}
+    if a.get("limit"):
+        args["limit"] = a["limit"]
+    res, pc = on_pc("ps", args, a.get("pocitac"))
+    return (f"Procesy na počítači {pc} — {res.get('total')} " + ("(zkráceno)" if res.get("truncated") else "")
+            + "\n" + (res.get("text") or "(nic)"))
+
+
 HANDLERS = {"pocitace": t_pocitace, "slozka": t_slozka, "precist": t_precist,
             "hledat": t_hledat, "zapsat": t_zapsat, "upravit": t_upravit,
             "spustit": t_spustit, "stahnout": t_stahnout, "nahrat": t_nahrat,
             "nechat_ukol": t_nechat_ukol, "ukoly_pro_pocitac": t_ukoly,
-            "zrusit_ukol": t_zrusit_ukol}
+            "zrusit_ukol": t_zrusit_ukol, "snimek_obrazovky": t_snimek,
+            "schranka_cist": t_schranka_cist, "schranka_zapsat": t_schranka_zapsat,
+            "otevrit": t_otevrit, "oznameni": t_oznameni, "procesy": t_procesy}
 
 
 # ── MCP po stdio ─────────────────────────────────────────────────────────────
@@ -465,15 +550,19 @@ def call_tool(rid, params):
         return send({"jsonrpc": "2.0", "id": rid,
                      "error": {"code": -32602, "message": f"Neznámý nástroj {name}"}})
     try:
-        text, error = handler(args), False
+        out, error = handler(args), False
     except Failed as exc:
-        text, error = str(exc), True
+        out, error = str(exc), True
     except Exception as exc:                      # chyba tady, ne na počítači
-        text, error = f"Nástroj {name} selhal: {exc}", True
-    if len(text) > MAX_TEXT:
-        text = text[:MAX_TEXT] + "\n… (zkráceno — požádej o menší část)"
-    send({"jsonrpc": "2.0", "id": rid,
-          "result": {"content": [{"type": "text", "text": text}], "isError": error}})
+        out, error = f"Nástroj {name} selhal: {exc}", True
+    if isinstance(out, list):                     # hotové bloky (text + obrázek)
+        content = out
+    else:
+        text = out
+        if len(text) > MAX_TEXT:
+            text = text[:MAX_TEXT] + "\n… (zkráceno — požádej o menší část)"
+        content = [{"type": "text", "text": text}]
+    send({"jsonrpc": "2.0", "id": rid, "result": {"content": content, "isError": error}})
 
 
 def handle(msg):

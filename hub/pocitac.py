@@ -50,11 +50,19 @@ import time
 
 from . import __version__, account, core
 
-LEVELS = ("", "cteni", "vse")
+LEVELS = ("", "cteni", "ptat", "vse")
 READ_OPS = frozenset({"info", "ls", "read", "find", "download"})
-ALLOWED = {"cteni": READ_OPS,
-           "vse": READ_OPS | frozenset({"write", "edit", "upload", "run"})}
+# Nic nemění a nic citlivého neukazuje: seznam procesů, oznámení v okně appky.
+SAFE_OPS = frozenset({"ps", "notify"})
+# Mění počítač nebo vidí obrazovku a schránku — při „ptát se“ jen po souhlasu člověka.
+ASK_OPS = frozenset({"write", "edit", "upload", "run", "screenshot", "clipboard_get",
+                     "clipboard_set", "open"})
+ALL_OPS = READ_OPS | SAFE_OPS | ASK_OPS
+ALLOWED = {"cteni": READ_OPS | SAFE_OPS, "ptat": ALL_OPS, "vse": ALL_OPS}
 MCP_NAME = "pocitac"
+APPROVE_WAIT = 120          # jak dlouho se čeká na souhlas; brána s tím počítá
+GRANT_SECONDS = 30 * 60     # „povolit na 30 minut“
+DECISIONS = ("jednou", "30min", "zamitnout")
 
 POLL_TIMEOUT = 45           # brána drží dotaz 25 s; tohle je strop na síť
 MAX_TRANSFER = 15 * 1024 * 1024
@@ -85,6 +93,8 @@ NOTIFY = None        # (zpráva) -> pošle ji všem otevřeným oknům
 
 STATE = {"state": "off", "note": "", "since": 0.0}
 RECENT = collections.deque(maxlen=12)
+PENDING = {}                # id žádosti -> {"op", "summary", "preview", "at", "event", "volba"}
+GRANT = {"until": 0.0}      # do kdy platí „povolit na 30 minut“
 _WAKE = threading.Event()
 _SLOTS = threading.BoundedSemaphore(6)
 _LOCK = threading.Lock()
@@ -136,7 +146,8 @@ def status():
     return {"access": access_level(), "asked": bool(core.CONFIG.get("pocitac_asked")),
             "state": STATE["state"], "note": STATE["note"],
             "server": account._host(account._base()) if account._base() else "",
-            "name": _machine_name(), "recent": recent[:6], "ukoly": ukoly()}
+            "name": _machine_name(), "recent": recent[:6], "ukoly": ukoly(),
+            "pending": pending_public(), "grants": grants_public()}
 
 
 def _set(state, note=""):
@@ -177,7 +188,8 @@ def _shell_argv(command):
 def describe(access):
     return {"id": device_id(), "name": _machine_name(), "system": _system_label(),
             "home": core.HOME, "user": _user_name(), "shell": _shell_argv("")[1],
-            "access": access, "version": __version__}
+            "access": access, "version": __version__,
+            "pending": pending_public(), "grants": grants_public()}
 
 
 def _user_name():
@@ -263,6 +275,9 @@ def _loop():
             for task in data["tasks"]:
                 if isinstance(task, dict):
                     threading.Thread(target=_handle, args=(task, token), daemon=True).start()
+            for cmd in data.get("prikazy") or []:
+                if isinstance(cmd, dict):
+                    _directive(cmd)
             for offer in data.get("ukoly") or []:
                 if isinstance(offer, dict):
                     _take_later(str(offer.get("id") or ""), token)
@@ -287,7 +302,7 @@ def _handle(task, token):
     started = time.time()
     with _SLOTS:
         try:
-            reply = {"ok": True, "result": execute(op, args)}
+            reply = {"ok": True, "result": execute(op, args, rid)}
         except TaskError as exc:
             reply = {"ok": False, "error": str(exc)}
         except Exception as exc:
@@ -304,7 +319,10 @@ def _handle(task, token):
 
 
 def _remember(op, args, reply, started):
-    what = str(args.get("command") if op == "run" else args.get("path") or "~")
+    what = str(args.get("command") if op == "run" else
+               args.get("target") if op == "open" else
+               args.get("message") if op == "notify" else
+               args.get("path") or ("" if op in ("screenshot", "ps", "clipboard_get", "clipboard_set") else "~"))
     if reply["ok"] and op == "run" and reply["result"].get("timed_out"):
         reply = {"ok": False, "error": "přerušeno po časovém limitu"}   # jen pro výpis
     entry = {"op": op, "what": what[:160], "at": started, "ok": reply["ok"],
@@ -318,15 +336,136 @@ def _remember(op, args, reply, started):
 
 
 # ── úkoly ────────────────────────────────────────────────────────────────────
-def execute(op, args):
+def execute(op, args, rid=""):
     level = access_level()
     if op not in ALLOWED.get(level, ()):
         if not level:
             raise TaskError("Na tomhle počítači je přístup pro Clauda ze serveru vypnutý.")
-        raise TaskError("Na tomhle počítači je povolené jen čtení — zapisovat, nahrávat ani "
-                        "spouštět příkazy nejde. Uživatel to může změnit v appce na počítači: "
-                        "Nastavení → Účet.")
+        raise TaskError("Na tomhle počítači je povolené jen čtení — zapisovat, spouštět příkazy, "
+                        "dívat se na obrazovku ani na schránku nejde. Uživatel to může změnit "
+                        "v appce na počítači (Nastavení → Účet) nebo v prostoru na serveru "
+                        "(Nastavení → Účet → Tvůj počítač); doporučená je volba „ptát se na souhlas“.")
+    if level == "ptat" and op in ASK_OPS:
+        _need_approval(op, args, rid)
+    if op not in OPS:
+        raise TaskError(f"Úkol {op!r} tahle verze appky neumí — aktualizuj Code Hub na počítači.")
     return OPS[op](args)
+
+
+# ── souhlas člověka (úroveň „ptát se“) ───────────────────────────────────────
+def _preview(op, args):
+    if op == "run":
+        cwd = str(args.get("cwd") or "").strip()
+        return (str(args.get("command") or "")[:500] + (f"\n(ve složce {cwd})" if cwd else ""))
+    if op == "write":
+        return f"{args.get('path') or ''}\n({len(str(args.get('content') or ''))} znaků)"
+    if op == "edit":
+        return f"{args.get('path') or ''}\n− {str(args.get('old') or '')[:150]}\n+ {str(args.get('new') or '')[:150]}"
+    if op == "upload":
+        return f"{args.get('path') or ''} ({args.get('name') or 'soubor'})"
+    if op == "open":
+        return str(args.get("target") or "")
+    if op == "clipboard_set":
+        return str(args.get("text") or "")[:300]
+    return ""
+
+
+_OP_TEXT = {"run": "spustit příkaz", "write": "zapsat soubor", "edit": "upravit soubor",
+            "upload": "nahrát soubor na počítač", "open": "otevřít",
+            "screenshot": "udělat snímek obrazovky", "clipboard_get": "přečíst schránku",
+            "clipboard_set": "zapsat do schránky"}
+
+
+def pending_public():
+    with _LOCK:
+        return [{"id": rid, "op": p["op"], "summary": p["summary"], "preview": p["preview"],
+                 "at": int(p["at"])} for rid, p in PENDING.items()]
+
+
+def grants_public():
+    return [{"until": int(GRANT["until"])}] if GRANT["until"] > time.time() else []
+
+
+def _push_pending():
+    """Žádost se hned ohlásí bráně, ať ji člověk uvidí i v prostoru na serveru."""
+    token = core.CONFIG.get("gw_token") or ""
+    if not token or not account._base():
+        return
+    account._call("/gw/pocitac/schvaleni", token=token, timeout=10,
+                  payload={"computer": device_id(), "pending": pending_public(),
+                           "grants": grants_public()})
+
+
+def _need_approval(op, args, rid):
+    """Počká na souhlas člověka; jinak vyhodí TaskError s větou pro Clauda."""
+    if GRANT["until"] > time.time():
+        return
+    key = rid or secrets.token_hex(8)
+    summary = (str(args.get("command") or args.get("path") or args.get("target") or "")
+               if op != "screenshot" else "snímek obrazovky")[:160] or _OP_TEXT.get(op, op)
+    entry = {"op": op, "summary": summary, "preview": _preview(op, args)[:600],
+             "at": time.time(), "event": threading.Event(), "volba": ""}
+    with _LOCK:
+        PENDING[key] = entry
+    core.log(f"počítač: čeká na souhlas — {op} {summary!r}")
+    if NOTIFY:
+        try:
+            NOTIFY({"t": "pocitac-schvaleni", "id": key, "op": op, "summary": summary})
+        except Exception:
+            pass
+    threading.Thread(target=_push_pending, daemon=True).start()
+    try:
+        entry["event"].wait(APPROVE_WAIT)
+    finally:
+        with _LOCK:
+            PENDING.pop(key, None)
+        threading.Thread(target=_push_pending, daemon=True).start()
+    if entry["volba"] in ("jednou", "30min"):
+        return
+    if entry["volba"] == "zamitnout":
+        raise TaskError("Uživatel to nepovolil. Zeptej se ho, co by mu vyhovovalo, nebo to "
+                        "udělej jinak.")
+    raise TaskError(f"Uživatel to do {APPROVE_WAIT} s nepotvrdil (možná u počítače nesedí). "
+                    "Řekni mu, že čekáš na jeho souhlas — ukáže se jako karta v aplikaci na počítači a "
+                    "v prostoru v Nastavení → Účet → Tvůj počítač — a pak to zkus znovu.")
+
+
+def decide(rid, choice, via="počítač"):
+    """Rozhodnutí o žádosti: z appky na počítači, nebo z prostoru přes bránu."""
+    if choice not in DECISIONS:
+        raise ValueError("Neznámá volba.")
+    with _LOCK:
+        entry = PENDING.get(str(rid or ""))
+    if not entry:
+        raise ValueError("Tuhle žádost už nikdo nečeká (vypršela nebo je vyřízená).")
+    entry["volba"] = choice
+    if choice == "30min":
+        GRANT["until"] = time.time() + GRANT_SECONDS
+    core.log(f"počítač: souhlas ({via}) — {entry['op']} {entry['summary']!r}: {choice}")
+    entry["event"].set()
+    return status()
+
+
+def revoke_grant():
+    GRANT["until"] = 0.0
+    threading.Thread(target=_push_pending, daemon=True).start()
+    return status()
+
+
+def _directive(task):
+    """Pokyn z brány: rozhodnutí o žádosti, nebo změna přístupu z prostoru."""
+    kind = str(task.get("typ") or "")
+    try:
+        if kind == "rozhodnuti":
+            decide(task.get("id"), str(task.get("volba") or ""), via="prostor")
+        elif kind == "pristup":
+            level = str(task.get("level") or "")
+            before = access_level()
+            set_access(level)
+            if NOTIFY and level != before:
+                NOTIFY({"t": "pocitac-pristup", "level": level})
+    except ValueError as exc:
+        core.log(f"počítač: pokyn {kind} zamítnut: {exc}", "warn")
 
 
 def _path(raw):
@@ -714,9 +853,167 @@ def op_run(args):
             "stderr": err.text(), "note": note}
 
 
+# ── další nástroje: procesy, oznámení, obrazovka, schránka, otevření ──────────
+def _cmd(argv, timeout=15, data=None):
+    """Spustí pomocný příkaz systému. (kód, stdout bajty, stderr text)."""
+    kwargs = {}
+    if core.IS_WINDOWS:
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        r = subprocess.run(argv, input=data, capture_output=True, timeout=timeout, **kwargs)
+    except FileNotFoundError:
+        return 127, b"", "nenalezeno"
+    except subprocess.TimeoutExpired:
+        return 124, b"", "vypršel časový limit"
+    return r.returncode, r.stdout, r.stderr.decode("utf-8", "replace").strip()
+
+
+def op_ps(args):
+    flt = str(args.get("name") or "").strip().lower()
+    if core.IS_WINDOWS:
+        code, out, err = _cmd(["tasklist", "/FO", "CSV", "/NH"])
+        rows = [ln for ln in out.decode("cp852", "replace").splitlines() if ln.strip()]
+    else:
+        argv = (["ps", "-Ao", "pid,etime,pcpu,pmem,comm", "-r"] if core.IS_MAC
+                else ["ps", "-eo", "pid,etime,pcpu,pmem,comm", "--sort=-pcpu"])
+        code, out, err = _cmd(argv)
+        rows = out.decode("utf-8", "replace").splitlines()
+    if code != 0 and not rows:
+        raise TaskError("Seznam procesů se nepodařilo získat" + (f": {err}" if err else "."))
+    head, rows = (rows[:1], rows[1:]) if not core.IS_WINDOWS else ([], rows)
+    if flt:
+        rows = [r for r in rows if flt in r.lower()]
+    try:
+        limit = max(1, min(200, int(args.get("limit") or 60)))
+    except (TypeError, ValueError):
+        limit = 60
+    return {"text": "\n".join(head + rows[:limit]), "total": len(rows), "truncated": len(rows) > limit}
+
+
+def op_notify(args):
+    msg = " ".join(str(args.get("message") or "").split())[:300]
+    title = " ".join(str(args.get("title") or "Claude").split())[:80]
+    if not msg:
+        raise TaskError("Chybí text oznámení.")
+    _notify({"t": "pocitac-oznameni", "title": title, "message": msg})      # v okně appky
+    if core.IS_MAC:
+        esc = lambda t: t.replace("\\", "\\\\").replace('"', '\\"')
+        _cmd(["osascript", "-e", f'display notification "{esc(msg)}" with title "{esc(title)}"'])
+    elif core.IS_WINDOWS:
+        pass                                  # okno appky stačí; toast bez doplňků nejde
+    else:
+        _cmd(["notify-send", title, msg])
+    return {"shown": True}
+
+
+def _screen_png():
+    """PNG obrazovky do dočasného souboru → bajty. Zkouší nástroje podle systému."""
+    path = os.path.join(tempfile.gettempdir(), f"hub-snimek-{secrets.token_hex(4)}.png")
+    try:
+        if core.IS_MAC:
+            tries = [["screencapture", "-x", path]]
+        elif core.IS_WINDOWS:
+            ps = ("Add-Type -AssemblyName System.Windows.Forms,System.Drawing;"
+                  "$b=[System.Windows.Forms.SystemInformation]::VirtualScreen;"
+                  "$bmp=New-Object System.Drawing.Bitmap $b.Width,$b.Height;"
+                  "$g=[System.Drawing.Graphics]::FromImage($bmp);"
+                  "$g.CopyFromScreen($b.Location,[System.Drawing.Point]::Empty,$b.Size);"
+                  f"$bmp.Save('{path}',[System.Drawing.Imaging.ImageFormat]::Png)")
+            tries = [["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps]]
+        else:
+            tries = [["grim", path], ["gnome-screenshot", "-f", path], ["spectacle", "-b", "-n", "-o", path],
+                     ["maim", path], ["scrot", "-o", path], ["import", "-window", "root", path]]
+        last = "žádný nástroj na snímek obrazovky nenalezen"
+        for argv in tries:
+            code, _out, err = _cmd(argv, timeout=20)
+            if code == 0 and os.path.isfile(path) and os.path.getsize(path) > 100:
+                with open(path, "rb") as fh:
+                    return fh.read()
+            if code != 127:
+                last = err or last
+        raise TaskError("Snímek obrazovky na tomhle počítači nejde udělat: " + last +
+                        (" (na Linuxu je potřeba grim, gnome-screenshot, spectacle, maim, scrot "
+                         "nebo imagemagick)" if not (core.IS_MAC or core.IS_WINDOWS) else ""))
+    finally:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+def op_screenshot(_args):
+    png = _screen_png()
+    if len(png) > MAX_TRANSFER:
+        raise TaskError("Snímek je moc velký (přes 15 MB).")
+    return {"mime": "image/png", "bytes": len(png), "data": base64.b64encode(png).decode("ascii")}
+
+
+def op_clipboard_get(_args):
+    if core.IS_MAC:
+        argvs = [["pbpaste"]]
+    elif core.IS_WINDOWS:
+        argvs = [["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"]]
+    else:
+        argvs = [["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"],
+                 ["xsel", "-bo"]]
+    for argv in argvs:
+        code, out, err = _cmd(argv)
+        if code == 0:
+            text = out.decode("utf-8", "replace")
+            return {"text": text[:READ_TEXT], "truncated": len(text) > READ_TEXT}
+    raise TaskError("Schránku se nepodařilo přečíst" + (" (na Linuxu je potřeba wl-paste, xclip "
+                    "nebo xsel)." if not (core.IS_MAC or core.IS_WINDOWS) else "."))
+
+
+def op_clipboard_set(args):
+    text = str(args.get("text") if args.get("text") is not None else "")
+    if len(text) > READ_TEXT:
+        raise TaskError("Text do schránky je moc dlouhý.")
+    data = text.encode("utf-8")
+    if core.IS_MAC:
+        argvs = [["pbcopy"]]
+    elif core.IS_WINDOWS:
+        argvs = [["clip"]]
+        data = text.encode("utf-16-le")
+    else:
+        argvs = [["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-bi"]]
+    for argv in argvs:
+        code, _out, _err = _cmd(argv, data=data)
+        if code == 0:
+            return {"chars": len(text)}
+    raise TaskError("Do schránky se nepodařilo zapsat.")
+
+
+def op_open(args):
+    target = str(args.get("target") or "").strip()
+    if not target:
+        raise TaskError("Chybí, co otevřít.")
+    if re.match(r"^https?://", target, re.I):
+        what = target
+    else:
+        if re.match(r"^[a-z][a-z0-9+.-]*:", target, re.I) and not re.match(r"^[a-z]:[\\/]", target, re.I):
+            raise TaskError("Otevřít jde jen adresa http(s) nebo soubor či složka na počítači.")
+        what = _path(target)
+        _guard(what)
+        if not os.path.exists(what):
+            raise TaskError(f"{what} na počítači není.")
+    if core.IS_WINDOWS:
+        try:
+            os.startfile(what)               # noqa: S606 — soubor vybral člověk souhlasem
+        except OSError as exc:
+            raise TaskError(f"Nejde otevřít: {exc}") from None
+    else:
+        code, _o, err = _cmd(["open" if core.IS_MAC else "xdg-open", what], timeout=10)
+        if code not in (0,):
+            raise TaskError("Nejde otevřít" + (f": {err}" if err else "."))
+    return {"opened": what}
+
+
 OPS = {"info": op_info, "ls": op_ls, "read": op_read, "find": op_find,
        "download": op_download, "write": op_write, "edit": op_edit,
-       "upload": op_upload, "run": op_run}
+       "upload": op_upload, "run": op_run, "ps": op_ps, "notify": op_notify,
+       "screenshot": op_screenshot, "clipboard_get": op_clipboard_get,
+       "clipboard_set": op_clipboard_set, "open": op_open}
 
 
 # ── úkoly na později ─────────────────────────────────────────────────────────

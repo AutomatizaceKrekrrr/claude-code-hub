@@ -29,13 +29,22 @@
     ['', 'Vypnuto', 'Claude ze serveru na tenhle počítač nesahá.'],
     ['cteni', 'Jen čtení',
      'Prochází složky, čte a hledá soubory a kopíruje je na server. Nic nezmění ani nespustí.'],
+    ['ptat', 'Ptát se na souhlas (doporučeno)',
+     'Čte sám. Zápis, spuštění programu, snímek obrazovky, schránku a otevírání souborů provede ' +
+     'až po tvém kliknutí na Povolit — v aplikaci na počítači nebo tady ze serveru.'],
     ['vse', 'Plný přístup',
-     'Navíc zapisuje a upravuje soubory a spouští programy — jako Claude spuštěný tady.'],
+     'Navíc zapisuje a upravuje soubory a spouští programy bez ptaní — jako Claude spuštěný tady.'],
   ];
 
   const OPS = {info: 'zjistil údaje', ls: 'prošel složku', read: 'četl', find: 'hledal v',
                download: 'stáhl na server', write: 'zapsal', edit: 'upravil',
-               upload: 'nahrál', run: 'spustil'};
+               upload: 'nahrál', run: 'spustil', ps: 'zjistil procesy', notify: 'oznámil',
+               screenshot: 'udělal snímek obrazovky', clipboard_get: 'přečetl schránku',
+               clipboard_set: 'zapsal do schránky', open: 'otevřel'};
+  const OP_ASK = {run: 'spustit příkaz', write: 'zapsat soubor', edit: 'upravit soubor',
+                  upload: 'nahrát soubor na počítač', open: 'otevřít na počítači',
+                  screenshot: 'udělat snímek obrazovky', clipboard_get: 'přečíst schránku',
+                  clipboard_set: 'zapsat do schránky'};
 
   function el(tag, cls, text) {
     const node = document.createElement(tag);
@@ -111,6 +120,106 @@
     'zapíše do přehledu a posledních pár uvidíš v Nastavení → Účet. Na počítač tak ' +
     'dosáhne i ten, kdo spravuje server — zapínej jen u serveru, kterému věříš.';
 
+
+  /* ── souhlas s úkolem počítače (úroveň „ptát se“) ─────────────────────────
+     Karta vpravo dole, stejná na počítači i v prostoru na serveru. `decide(id,
+     volba)` pošle rozhodnutí tam, kam patří: v appce na počítači do hubu, v
+     prostoru přes bránu (cookie — Claude v prostoru ji nemá, nemůže si
+     souhlas dát sám). Karta zmizí sama, když žádost mezitím vyřídil kdo jiný
+     nebo vypršela (`stillPending`). */
+  const askCards = new Map();
+
+  function askHost() {
+    let host = document.querySelector('.pc-asks');
+    if (!host) {
+      host = el('div', 'pc-asks');
+      document.body.appendChild(host);
+    }
+    return host;
+  }
+
+  function showApproval(io, req, decide, where) {
+    if (askCards.has(req.id)) return;
+    const card = el('div', 'pc-ask-card');
+    const head = el('div', 'pc-ask-head');
+    head.appendChild(icon('i-laptop'));
+    head.appendChild(el('b', null, 'Claude chce ' + (OP_ASK[req.op] || req.op)));
+    if (where) head.appendChild(el('span', 'set-dim', ' · ' + where));
+    card.appendChild(head);
+    const what = req.preview || req.summary || '';
+    if (what) card.appendChild(el('pre', 'pc-ask-what', what));
+    const wait = Math.max(0, 120 - (Date.now() / 1000 - (req.at || Date.now() / 1000)));
+    card.appendChild(el('div', 'pc-ask-note',
+      'Nepovolíš-li do ' + Math.round(wait) + ' s, Claude to bude brát jako ne. Povolení na 30 minut ' +
+      'platí pro všechny takové úkoly najednou.'));
+    const btns = el('div', 'pc-ask-btns');
+    const mk = (cls, text, volba) => {
+      const b = el('button', 'btn ' + cls, text);
+      b.onclick = async () => {
+        btns.querySelectorAll('button').forEach((x) => { x.disabled = true; });
+        try {
+          await decide(req.id, volba);
+        } catch (e) {
+          io.toast('Nepovedlo se: ' + friendly('rozhodnout', e));
+        }
+        closeApproval(req.id);
+      };
+      return b;
+    };
+    btns.append(mk('primary', 'Povolit jednou', 'jednou'), mk('ghost', 'Povolit na 30 minut', '30min'),
+                mk('ghost', 'Zamítnout', 'zamitnout'));
+    card.appendChild(btns);
+    askHost().appendChild(card);
+    askCards.set(req.id, card);
+  }
+
+  function closeApproval(id) {
+    const c = askCards.get(id);
+    if (c) c.remove();
+    askCards.delete(id);
+    const host = document.querySelector('.pc-asks');
+    if (host && !host.children.length) host.remove();
+  }
+
+  // Karty žádostí, které už nikdo nečeká, zmizí.
+  function pruneApprovals(list) {
+    const live = new Set((list || []).map((p) => p.id));
+    for (const id of [...askCards.keys()]) if (!live.has(id)) closeApproval(id);
+  }
+
+  /* Na počítači: hub pošle zprávu `pocitac-schvaleni`; stav se pak hlídá, dokud
+     karta visí (rozhodnutí z prostoru ji zavře). */
+  function approvalFromHub(io, msg) {
+    const decide = async (id, volba) => {
+      const r = await io.api('pocitac', {action: 'rozhodnout', id, volba});
+      if (r && r.error) throw new Error(r.error);
+    };
+    showApproval(io, {id: msg.id, op: msg.op, summary: msg.summary, at: Date.now() / 1000}, decide, 'z prostoru na serveru');
+    (async function watch() {
+      while (askCards.has(msg.id)) {
+        await new Promise((r) => setTimeout(r, 2000));
+        let st = null;
+        try { st = await io.api('pocitac'); } catch (_) { continue; }
+        const mine = (st.pending || []).find((p) => p.id === msg.id);
+        if (mine && askCards.get(msg.id)) {
+          const pre = askCards.get(msg.id).querySelector('.pc-ask-what');
+          if (!pre && mine.preview) {
+            const node = el('pre', 'pc-ask-what', mine.preview);
+            askCards.get(msg.id).querySelector('.pc-ask-head').after(node);
+          }
+        }
+        if (!mine) closeApproval(msg.id);
+      }
+    })();
+  }
+
+  function simpleNotice(io, msg) {
+    if (msg.t === 'pocitac-oznameni') io.toast((msg.title ? msg.title + ': ' : '') + msg.message);
+    else if (msg.t === 'pocitac-pristup') {
+      io.toast('Přístup pro Clauda ze serveru byl změněn z prostoru na: ' + levelLabel(msg.level || '').toLowerCase());
+    }
+  }
+
   /* ── na počítači: Nastavení → Účet ───────────────────────────────────────── */
   function panel(io) {
     const box = el('div', 'acc-sec pc-panel');
@@ -173,6 +282,24 @@
         }
       }
       drawTasks(st.ukoly || []);
+      // Souhlas: platné povolení na 30 minut a čekající žádosti.
+      const g = (st.grants || [])[0];
+      if (g && g.until * 1000 > Date.now()) {
+        const row = el('div', 'pc-grant');
+        row.appendChild(el('span', null, 'Povoleno bez ptaní do ' +
+          new Date(g.until * 1000).toLocaleTimeString('cs-CZ', {hour: '2-digit', minute: '2-digit'}) + '.'));
+        const off = el('button', 'btn ghost', 'Zrušit povolení');
+        off.onclick = async () => { await io.api('pocitac', {action: 'zrusit-povoleni'}).catch(() => {}); load(); };
+        row.appendChild(off);
+        line.appendChild(row);
+      }
+      for (const p of st.pending || []) {
+        showApproval(io, p, async (id, volba) => {
+          const r = await io.api('pocitac', {action: 'rozhodnout', id, volba});
+          if (r && r.error) throw new Error(r.error);
+        }, 'z prostoru na serveru');
+      }
+      pruneApprovals(st.pending);
       recent.textContent = '';
       const rows = st.recent || [];
       if (!rows.length) return;
@@ -232,7 +359,7 @@
     const cfg = (io.state && io.state.config) || {};
     // Kdo se ještě nerozhodl, má předvybraný plný přístup — kvůli němu tahle
     // funkce vznikla. Potvrdit ho ale musí sám.
-    let level = cfg.pocitac_asked ? (cfg.pocitac_access || '') : 'vse';
+    let level = cfg.pocitac_asked ? (cfg.pocitac_access || '') : 'ptat';
     return new Promise((resolve) => {
       const root = el('div', 'onb pc-ask');
       const boxEl = el('div', 'onb-box');
@@ -396,6 +523,28 @@
     return r.json();
   }
 
+  async function gwPost(path, payload) {
+    const r = await fetch(path, {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-Hub-Account': '1'},
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || d.ok === false) throw new Error(d.error || 'Server teď neodpovídá, zkus to za chvíli.');
+    return d;
+  }
+
+  // Souhlas s úkolem počítače z prostoru: rozhoduje člověk přes bránu, ne prostor.
+  function serverApprovals(io, list) {
+    for (const c of list) {
+      for (const p of c.pending || []) {
+        showApproval(io, p, (id, volba) => gwPost('/gw/pocitac/rozhodnout',
+          {computer: c.id, id, volba}), 'počítač ' + c.name);
+      }
+    }
+    pruneApprovals(list.flatMap((c) => c.pending || []));
+  }
+
   async function computers() {
     const data = await gwState();
     return (data.computers || []).filter((c) => c.online && c.access);
@@ -491,6 +640,24 @@
             [c.system, c.access_label, lastText(c) && 'naposledy ' + lastText(c)]
               .filter(Boolean).join(' · ')));
           body.appendChild(row);
+          // Přístup se dá změnit i odsud: rozhoduješ ty (přihlášený v prohlížeči), ne Claude.
+          const pick = tiles(c.access, async (level) => {
+            pick.set(level);
+            try {
+              await gwPost('/gw/pocitac/pristup', {computer: c.id, level});
+              io.toast('Změna se na počítači ' + c.name + ' projeví za pár vteřin: ' +
+                       levelLabel(level).toLowerCase() + '.');
+            } catch (e) {
+              pick.set(c.access);
+              io.toast('Nepovedlo se: ' + friendly('pristup', e));
+            }
+          });
+          body.appendChild(pick);
+          const g = (c.grants || [])[0];
+          if (g && g.until * 1000 > Date.now()) {
+            body.appendChild(el('div', 'set-dim', 'Povoleno bez ptaní do ' +
+              new Date(g.until * 1000).toLocaleTimeString('cs-CZ', {hour: '2-digit', minute: '2-digit'}) + '.'));
+          }
         }
       } else {
         body.appendChild(el('div', 'set-note',
@@ -552,6 +719,8 @@
         const data = await gwState();
         const list = (data.computers || []).filter((c) => c.online && c.access);
         ukolyNotice(io, data.ukoly);
+        serverApprovals(io, list);
+        if (list.some((c) => (c.pending || []).length)) wait = 2000;
         b.hidden = !list.length;
         if (list.length) {
           label.textContent = list.length === 1 ? list[0].name : list.length + ' počítače';
@@ -562,7 +731,7 @@
           // ptát častěji, ať štítek nezaostává.
           const newest = Math.min(...list.map((c) => (c.last ? c.last.ago : 1e9)));
           b.classList.toggle('busy', newest < 10);
-          wait = newest < 60 ? 5000 : 15000;
+          if (wait > 5000) wait = newest < 60 ? 5000 : 15000;
         }
       } catch (_) {
         b.hidden = true;
@@ -576,6 +745,7 @@
     tick();
   }
 
-  global.HubPocitac = {LEVELS, panel, ask, serverBlock, chip, levelLabel, ukol, pending};
+  global.HubPocitac = {LEVELS, panel, ask, serverBlock, chip, levelLabel, ukol, pending,
+                       approvalFromHub, simpleNotice};
 
 })(window);

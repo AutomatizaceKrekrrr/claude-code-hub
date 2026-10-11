@@ -3761,6 +3761,11 @@ function handle(msg) {
       tlacitka: [{label: 'Otevřít', primary: true, run: () => otevriPrenesenyChat(msg.chat)}, {label: 'Později', run: async () => {}}]});
   } else if (msg.t === 'prenos-ceka') {
     prenosPoll();
+  } else if (msg.t === 'pocitac-schvaleni') {
+    // Claude ze serveru chce na tomhle počítači udělat něco, co chce souhlas.
+    HubPocitac.approvalFromHub(hubIO(), msg);
+  } else if (msg.t === 'pocitac-oznameni' || msg.t === 'pocitac-pristup') {
+    HubPocitac.simpleNotice(hubIO(), msg);
   } else if (msg.t === 'pocitac-ukol') {
     // Úkol, který nechal Claude ze serveru (hub/pocitac.py): dorazil, nebo běží.
     HubPocitac.ukol(hubIO(), msg);

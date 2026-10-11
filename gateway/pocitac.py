@@ -32,9 +32,19 @@ import threading
 import time
 
 READ_OPS = frozenset({"info", "ls", "read", "find", "download"})
-ALL_OPS = READ_OPS | frozenset({"write", "edit", "upload", "run"})
-ACCESS = {"cteni": READ_OPS, "vse": ALL_OPS}
-ACCESS_LABEL = {"cteni": "jen čtení", "vse": "plný přístup"}
+# Bez ptaní povolené i při „jen čtení“: seznam procesů a oznámení v okně appky.
+SAFE_OPS = frozenset({"ps", "notify"})
+# Mění počítač nebo vidí, co má člověk na obrazovce a ve schránce.
+ASK_OPS = frozenset({"write", "edit", "upload", "run", "screenshot", "clipboard_get",
+                     "clipboard_set", "open"})
+ALL_OPS = READ_OPS | SAFE_OPS | ASK_OPS
+# „ptat“ = čtení bez ptaní, vše ostatní jen po souhlasu člověka (appka na počítači
+# nebo hub v prostoru; rozhoduje počítač, brána jen předává).
+ACCESS = {"cteni": READ_OPS | SAFE_OPS, "ptat": ALL_OPS, "vse": ALL_OPS}
+ACCESS_LABEL = {"cteni": "jen čtení", "ptat": "ptá se na souhlas", "vse": "plný přístup"}
+LEVELS = ("", "cteni", "ptat", "vse")
+APPROVE_WAIT = 120      # jak dlouho počítač čeká na souhlas člověka (hub/pocitac.py)
+DECISIONS = ("jednou", "30min", "zamitnout")
 
 POLL_WAIT = 25          # jak dlouho brána drží dotaz počítače, když nemá úkol
 ONLINE_GRACE = 40       # počítač, který se tak dlouho neozval, je pryč
@@ -69,6 +79,14 @@ def summary(op, args):
     args = args if isinstance(args, dict) else {}
     if op == "run":
         return _text(args.get("command"), 160)
+    if op == "open":
+        return _text(args.get("target"), 160)
+    if op == "clipboard_set":
+        return "schránka"
+    if op in ("screenshot", "clipboard_get", "ps"):
+        return {"screenshot": "snímek obrazovky", "clipboard_get": "schránka", "ps": "procesy"}[op]
+    if op == "notify":
+        return _text(args.get("message"), 160)
     return _text(args.get("path"), 160)
 
 
@@ -141,6 +159,9 @@ class Computer:
         self.polling = 0
         self.last_seen = 0.0
         self.queue = []
+        self.pending = []           # žádosti o souhlas, na které počítač čeká
+        self.grants = []            # časově omezená povolení: [{"until"}]
+        self.directives = []        # co má počítač udělat: rozhodnutí, změna přístupu
         self.last = None            # poslední úkol: {"op", "summary", "at"}
         self.offered = set()        # úkoly na později, o kterých už ví
 
@@ -152,6 +173,7 @@ class Computer:
                 "home": self.home, "user": self.user, "shell": self.shell,
                 "access": self.access,
                 "access_label": ACCESS_LABEL.get(self.access, "vypnuto"),
+                "pending": list(self.pending), "grants": list(self.grants),
                 "version": self.version, "online": self.online(now),
                 "seen_ago": 0 if self.polling else int(now - self.last_seen),
                 "last": (dict(self.last, ago=int(now - self.last["at"]))
@@ -189,11 +211,12 @@ class Broker:
             comp.access = access if access in ACCESS else ""
             if not comp.access:
                 self._drop_queue(comp, "Přístup na počítači je vypnutý.")
+            self._set_pending(comp, info.get("pending"), info.get("grants"))
             comp.polling += 1
             try:
                 deadline = time.time() + max(0.0, min(float(wait), POLL_WAIT))
                 # Nový úkol na později vzbudí dotaz hned, ne až po POLL_WAIT.
-                while not comp.queue and not (self._offer_ids(comp) - comp.offered):
+                while not comp.queue and not comp.directives and not (self._offer_ids(comp) - comp.offered):
                     left = deadline - time.time()
                     if left <= 0:
                         break
@@ -204,6 +227,73 @@ class Broker:
                 comp.last_seen = time.time()
             self._forget_old()
         return tasks
+
+    @staticmethod
+    def _set_pending(comp, pending, grants):
+        """Co počítač právě čeká od člověka a co už povolil (jen pro zobrazení)."""
+        out = []
+        for item in (pending if isinstance(pending, list) else [])[:12]:
+            if isinstance(item, dict) and _ID.fullmatch(str(item.get("id") or "")):
+                out.append({"id": str(item["id"]), "op": _text(item.get("op"), 20),
+                            "summary": _text(item.get("summary"), 200),
+                            "preview": _text(item.get("preview"), 600),
+                            "at": int(item.get("at") or 0)})
+        comp.pending = out
+        comp.grants = [{"until": int(g.get("until") or 0)}
+                       for g in (grants if isinstance(grants, list) else [])[:4]
+                       if isinstance(g, dict)]
+
+    def update_pending(self, uid, cid, pending, grants):
+        """Počítač hlásí novou žádost o souhlas hned, ne až při dalším dotazu."""
+        with self._cond:
+            comp = self.computers.get((uid, str(cid or "")))
+            if not comp:
+                return False
+            self._set_pending(comp, pending, grants)
+            return True
+
+    def take_directives(self, uid, cid):
+        with self._cond:
+            comp = self.computers.get((uid, str(cid or "")))
+            if not comp or not comp.directives:
+                return []
+            out, comp.directives = comp.directives, []
+            return out
+
+    def decide(self, uid, cid, rid, choice):
+        """Člověk v prostoru (cookie, ne žeton prostoru) rozhodl o žádosti počítače."""
+        if choice not in DECISIONS:
+            return {"ok": False, "error": "Neznámá volba."}
+        with self._cond:
+            comp = self._find(uid, cid)
+            if not comp:
+                return {"ok": False, "error": "Takový počítač tu není připojený."}
+            if not any(p["id"] == str(rid or "") for p in comp.pending):
+                return {"ok": False, "error": "Tuhle žádost už počítač nečeká (vypršela nebo už je vyřízená)."}
+            comp.directives.append({"typ": "rozhodnuti", "id": str(rid), "volba": choice})
+            comp.pending = [p for p in comp.pending if p["id"] != str(rid)]
+            self._cond.notify_all()
+        return {"ok": True}
+
+    def set_access(self, uid, cid, level):
+        """Člověk z prostoru mění přístup na svém počítači. Počítač změnu provede
+        a ukáže u sebe upozornění."""
+        if level not in LEVELS:
+            return {"ok": False, "error": "Neznámá úroveň přístupu."}
+        with self._cond:
+            comp = self._find(uid, cid)
+            if not comp:
+                return {"ok": False, "error": "Takový počítač tu není připojený."}
+            comp.directives.append({"typ": "pristup", "level": level})
+            self._cond.notify_all()
+        return {"ok": True}
+
+    def _find(self, uid, cid):
+        comp = self.computers.get((uid, str(cid or "")))
+        if comp:
+            return comp
+        mine = [c for (u, _c), c in self.computers.items() if u == uid]
+        return mine[0] if len(mine) == 1 and not cid else None
 
     def bye(self, uid, cid):
         """Počítač se odhlásil (vypnutý přístup, zavřená appka)."""
@@ -256,9 +346,12 @@ class Broker:
             if op not in ACCESS.get(comp.access, ()):
                 return {"ok": False, "computer": comp.name, "error":
                         f"Na počítači {comp.name} je zapnutý jen přístup ke čtení — "
-                        "zapisovat, nahrávat ani spouštět příkazy nejde. Když to "
-                        "uživatel chce, přepne to v appce na počítači: Nastavení → "
-                        "Účet → Claude ze serveru na tomhle počítači."}
+                        "tohle (zápis, spouštění, snímek obrazovky, schránka…) nejde. Když to "
+                        "uživatel chce, přepne to buď tady v prostoru (Nastavení → Účet → Tvůj počítač), "
+                        "nebo v appce na počítači: Nastavení → Účet → Claude ze serveru na "
+                        "tomhle počítači. Doporučená volba je „ptá se na souhlas“."}
+            if comp.access == "ptat" and op in ASK_OPS:
+                timeout += APPROVE_WAIT        # na souhlas člověka se čeká zvlášť
             if len(comp.queue) >= MAX_QUEUE:
                 return {"ok": False, "computer": comp.name,
                         "error": "Na počítač čeká moc úkolů najednou, zkus to za chvíli."}

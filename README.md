@@ -548,6 +548,16 @@ k prostoru přihlašuješ.
 | `zapsat`, `upravit` | zápis souboru, nahrazení přesného textu | plný |
 | `spustit` | příkaz v bashi (na Windows Git Bash, jinak cmd), limit až 10 minut | plný |
 | `nahrat` | zkopíruje soubor ze serveru na počítač | plný |
+| `procesy`, `oznameni` | seznam běžících programů; oznámení uživateli (okno appky + systém) | jen čtení |
+| `snimek_obrazovky`, `schranka_cist`, `schranka_zapsat`, `otevrit` | obrazovka jako obrázek, schránka, otevření souboru / adresy ve výchozí aplikaci | plný nebo souhlas |
+
+**Ptát se na souhlas (od 2.61).** Třetí stupeň mezi „jen čtení“ a „plný“: čtení a
+`procesy`/`oznameni` jdou samy, vše ostatní (zápis, spuštění, snímek obrazovky,
+schránka, otevírání) až po tvém kliknutí na kartě **Povolit jednou / na 30 minut /
+Zamítnout**. Karta se ukáže v appce na počítači i v prostoru na serveru (rozhoduje
+člověk přes bránu s cookie — Claude v prostoru ji nemá, takže si souhlas dát neumí).
+Bez rozhodnutí do dvou minut je to „ne“. Přístup jde z prostoru změnit i bez
+návratu do appky: ⚙ → Účet → *Tvůj počítač* → výběr stupně.
 
 **Zapnutí.** Před prvním přechodem do prostoru se appka jednou zeptá, kolik
 Claude ze serveru smí — **Vypnuto**, **Jen čtení**, nebo **Plný přístup**.
