@@ -239,6 +239,46 @@ install_clipboard() {
     return 1
 }
 
+pkg_install() {
+    # apt / dnf / pacman, bez roota jen když to jde (sudo -n), jinak na terminálu s dotazem.
+    local pkg="$1"
+    if command -v apt-get >/dev/null 2>&1 && apt-get install -s "$pkg" >/dev/null 2>&1; then
+        sudo -n apt-get install -y "$pkg" >/dev/null 2>&1 || { [ -t 0 ] && sudo apt-get install -y "$pkg"; }
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo -n dnf install -y "$pkg" >/dev/null 2>&1 || { [ -t 0 ] && sudo dnf install -y "$pkg"; }
+    elif command -v pacman >/dev/null 2>&1; then
+        sudo -n pacman -S --noconfirm "$pkg" >/dev/null 2>&1 || { [ -t 0 ] && sudo pacman -S --noconfirm "$pkg"; }
+    else
+        return 1
+    fi
+}
+
+# Claude ze serveru smí (podle volby v appce) vidět obrazovku a schránku. Na Waylandu
+# na to X nástroje nestačí: wl-clipboard na schránku a nástroj podle prostředí na snímek.
+install_pc_tools() {
+    [ "$(uname)" = "Darwin" ] && return 0              # screencapture, pbcopy jsou v systému
+    local wayland=0 shot_cmd shot_pkg
+    { [ "${XDG_SESSION_TYPE:-}" = "wayland" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; } && wayland=1
+    if [ "$wayland" = 1 ] && ! command -v wl-copy >/dev/null 2>&1; then
+        info "doinstalovávám wl-clipboard ${D}(schránka pro Clauda ze serveru)${R}"
+        pkg_install wl-clipboard >/dev/null 2>&1 && ok "wl-clipboard nainstalován" \
+            || warn "nevyšlo — doinstaluj ručně: apt install wl-clipboard"
+    fi
+    if command -v gnome-screenshot >/dev/null 2>&1 || command -v grim >/dev/null 2>&1 \
+            || command -v spectacle >/dev/null 2>&1 || command -v maim >/dev/null 2>&1 \
+            || command -v scrot >/dev/null 2>&1; then
+        return 0
+    fi
+    case "${XDG_CURRENT_DESKTOP:-}" in
+        *GNOME*|*Unity*|*Zorin*|*Cinnamon*|*Budgie*) shot_cmd=gnome-screenshot; shot_pkg=gnome-screenshot ;;
+        *KDE*)                                        shot_cmd=spectacle;        shot_pkg=spectacle ;;
+        *) if [ "$wayland" = 1 ]; then shot_cmd=grim; shot_pkg=grim; else shot_cmd=scrot; shot_pkg=scrot; fi ;;
+    esac
+    info "doinstalovávám $shot_pkg ${D}(snímek obrazovky pro Clauda ze serveru)${R}"
+    pkg_install "$shot_pkg" >/dev/null 2>&1 && ok "$shot_pkg nainstalován" \
+        || warn "nevyšlo — doinstaluj ručně: apt install $shot_pkg"
+}
+
 install_gh() {
     if [ "$(uname)" = "Darwin" ]; then
         command -v brew >/dev/null 2>&1 && brew install gh && return 0
@@ -318,6 +358,8 @@ else
         if install_clipboard >/dev/null 2>&1; then ok "schránka připravena"
         else warn "nevyšlo — doinstaluj ručně: apt install wl-clipboard  (nebo xclip)"; fi
     fi
+
+    install_pc_tools
 
     if command -v gh >/dev/null 2>&1; then
         ok "GitHub CLI ($(command -v gh))"

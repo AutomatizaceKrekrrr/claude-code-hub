@@ -923,6 +923,8 @@ def _screen_png():
         else:
             tries = [["grim", path], ["gnome-screenshot", "-f", path], ["spectacle", "-b", "-n", "-o", path],
                      ["maim", path], ["scrot", "-o", path], ["import", "-window", "root", path]]
+            if "gnome" in (os.environ.get("XDG_CURRENT_DESKTOP") or "").lower():
+                tries.insert(0, tries.pop(1))      # GNOME nemá wlr-screencopy, grim by tam jen selhal
         last = "žádný nástroj na snímek obrazovky nenalezen"
         for argv in tries:
             code, _out, err = _cmd(argv, timeout=20)
