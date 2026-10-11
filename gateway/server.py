@@ -1656,13 +1656,30 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         owner = shared.ACCOUNTS.by_id(entry.get("owner")) if shared.ACCOUNTS else None
         proc = self.hubs.procs.get(entry.get("owner")) if self.hubs else None
         if not owner or not proc or not proc.alive():
-            return self._json({"offline": True, "zprava": "Majitel má prostor vypnutý — chat se teď nedá číst."})
+            # Majitelův prostor neběží — číst jde i tak, přímo z uloženého přepisu
+            # (jen čtení, bez „Claude pracuje“). Psát se do chatu bez prostoru nedá.
+            if tool == "sdilet_cteni":
+                path = relace.prepis_offline(owner, entry.get("chat"))
+                if path:
+                    from hub import cteni as _cteni
+                    try:
+                        start = max(0, int(args.get("from") or 0))
+                    except (TypeError, ValueError):
+                        start = 0
+                    result = _cteni.read(path, start, tail=not start)
+                    result["pracuje"] = False
+                    result["bezi"] = False
+                    relace.pridej_stav(result, relace.verejne(user, rid, entry), _role, user,
+                                       majitel_offline=True)
+                    return self._json(result)
+            return self._json({"offline": True, "zprava": "Majitel má prostor vypnutý — zpráva by nikam nedošla. "
+                                                          "Čtení funguje, psát jde, až ho zapne."})
         try:
             result = mcp._hub_call(self, owner, tool, args, timeout=20)
         except mcp.ToolError as exc:
             return self._json({"error": str(exc)}, 502)
         if tool == "sdilet_cteni":
-            relace.pridej_stav(result, relace.verejne(user, rid, entry), _role)
+            relace.pridej_stav(result, relace.verejne(user, rid, entry), _role, user)
         return self._json(result)
 
     def _gw_shared_change(self, user):

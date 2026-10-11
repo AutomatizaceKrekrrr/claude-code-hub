@@ -245,8 +245,33 @@ def verejne(user, rid, entry):
     return _public(rid, entry, user)
 
 
-def pridej_stav(result, pub, moje_role):
-    """K odpovědi s přepisem přidá, kdo chat sdílí, kdo se dívá a co smím."""
+def pridej_stav(result, pub, moje_role, user=None, majitel_offline=False):
+    """K odpovědi s přepisem přidá, kdo chat sdílí, kdo se dívá, co smím a jak se
+    jmenuju (podle toho viewer pozná, které bubliny jsou moje)."""
+    psat = moje_role in ("majitel", "pise") and not majitel_offline
     result["relace"] = {"majitel": pub["majitel"], "titulek": pub["titulek"],
                         "clenove": pub["clenove"], "diva": pub["diva"],
-                        "role": moje_role, "psat": moje_role in ("majitel", "pise")}
+                        "role": moje_role, "psat": psat, "ja": jmeno(user) if user else "",
+                        "majitel_offline": bool(majitel_offline)}
+
+
+def prepis_offline(owner, chat):
+    """Přepis sdíleného chatu přímo z domova majitele — pro chvíli, kdy mu
+    prostor neběží. Jen čtení a jen soubor, který opravdu leží v jeho domově
+    (prostor smí v domově zakládat odkazy, brána je nenásleduje)."""
+    from hub import cteni
+    from . import workspace
+    if not cteni.je_id(chat) or not owner:
+        return ""
+    home = workspace.home_for(owner)
+    root = os.path.join(home, ".claude", "projects")
+    real_home = os.path.realpath(home) + os.sep
+    try:
+        folders = os.listdir(root)
+    except OSError:
+        return ""
+    for folder in folders:
+        path = os.path.join(root, folder, chat + ".jsonl")
+        if os.path.isfile(path) and os.path.realpath(path).startswith(real_home):
+            return path
+    return ""

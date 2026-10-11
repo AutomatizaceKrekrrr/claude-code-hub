@@ -339,7 +339,7 @@
      `imageUrl` převede cestu k obrázku z hub-images na adresu, ze které ho
      stránka smí načíst (/api/image). */
   function flow(mount, imageUrl, {historie = false, openLink = null, notice = null, zive = null,
-                                  udalost = null, naPrehled = null, dulKlic = null, copy = null} = {}) {
+                                  udalost = null, naPrehled = null, dulKlic = null, copy = null, sdileny = null} = {}) {
     /* Odkaz v Markdownu je <a> bez href (vault.js) — sám nikam nevede,
        otevřít ho musí hub. V okně appky by holý odkaz stejně nic neudělal. */
     mount.addEventListener('click', (ev) => {
@@ -587,8 +587,28 @@
     }
 
     /* Bublina se zadáním. `stitek` = řádek pod ní: jestli ji Claude už vidí. */
+    /* Ve sdíleném chatu: kdo zprávu napsal. Kolegovy zprávy chodí do chatu majitele
+       jako „[Jméno] text“ (gateway/relace.py → sdilet_poslat); co prefix nemá,
+       napsal majitel. Moje bubliny jsou vpravo v mé barvě, cizí vlevo a každý
+       člověk má svou, vždy se jménem nad bublinou. */
+    const KDO_PALETA = ['#a371f7', '#3fb950', '#e0843c', '#2bb3a8', '#e05d8a', '#d29922'];
+    function kdoBarva(jmeno) {
+      let h = 0;
+      for (const ch of String(jmeno || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+      return KDO_PALETA[h % KDO_PALETA.length];
+    }
     function bublina(b, cls, stitek) {
       const row = el('div', 'cteni-me' + (cls ? ' ' + cls : ''));
+      let kdo = '';
+      if (sdileny && !/fronta|ceka/.test(cls || '')) {
+        const m = /^\[([^\]\n]{1,60})\]\s+([\s\S]*)$/.exec(b.text || '');
+        kdo = m ? m[1].trim() : (sdileny.majitel || '');
+        if (m) b = Object.assign({}, b, {text: m[2]});
+        const moje = !!sdileny.ja && kdo.toLowerCase() === String(sdileny.ja).toLowerCase();
+        row.classList.add(moje ? 'cteni-moje' : 'cteni-cizi');
+        if (!moje) row.style.setProperty('--kdo', kdoBarva(kdo));
+        row.appendChild(el('div', 'cteni-kdo', moje ? 'Ty' : kdo));
+      }
       const bubble = el('div', 'cteni-bubble');
       /* Přiložený obrázek se ukáže jako obrázek, ne jako cesta k souboru —
          tu hub Claudovi napsal jen proto, aby si ho uměl otevřít. */
@@ -1618,7 +1638,9 @@
     const lista = q('.relace-lista');
     let zivy = true, uDna = true, odkud = 0, psat = share.role === 'pise', prazdnych = 0;
 
-    const proud = flow(q('.cteni-flow'), io.imageUrl, {openLink: io.openLink, notice: io.notice, copy: io.copy});
+    const sdilenoInfo = {ja: share.ja || '', majitel: share.majitel};
+    const proud = flow(q('.cteni-flow'), io.imageUrl, {openLink: io.openLink, notice: io.notice, copy: io.copy,
+                                                         sdileny: sdilenoInfo});
     scroll.addEventListener('scroll', () => {
       uDna = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < U_DNA;
     }, {passive: true});
@@ -1653,7 +1675,12 @@
       pole.value = '';
       pole.style.height = 'auto';
       try {
-        await io.gw('/poslat', {id: share.id, text});
+        const r = await io.gw('/poslat', {id: share.id, text});
+        if (r && r.offline) {
+          pole.value = text;
+          io.notice(r.zprava || 'Majitel má prostor vypnutý — zpráva by nikam nedošla.');
+          return;
+        }
         stav.textContent = 'zpráva odeslána';
       } catch (err) {
         pole.value = text;
@@ -1682,7 +1709,8 @@
         lista.appendChild(c);
       };
       chip('Sdílený chat', 'sdileny', 'Chat běží u ' + r.majitel + ', ty ho sleduješ.');
-      chip(psat ? 'Smíš psát' : 'Jen čtení', psat ? 'pise' : '');
+      if (r.majitel_offline) chip('Uložený chat — psát jde, až ' + r.majitel + ' zapne prostor', 'offline');
+      else chip(psat ? 'Smíš psát' : 'Jen čtení', psat ? 'pise' : '');
       if (r.diva && r.diva.length) chip('Dívá se i: ' + r.diva.join(', '), 'diva');
       const souboru = proud.prehled().soubory.length;
       if (souboru) chip('✎ ' + souboru + (souboru === 1 ? ' upravený soubor' : souboru < 5 ? ' upravené soubory' : ' upravených souborů'),
@@ -1716,6 +1744,8 @@
           stav.textContent = 'majitel je offline';
           proud.stav(null);
         } else {
+          // Jméno, podle kterého se pozná, které bubliny jsou moje — dřív než se kreslí.
+          if (res.relace && res.relace.ja) sdilenoInfo.ja = res.relace.ja;
           odkud = res.next !== undefined ? res.next : odkud;
           if (res.blocks && res.blocks.length) {
             proud.add(res.blocks);
@@ -1724,7 +1754,9 @@
             if (uDna) scroll.scrollTop = scroll.scrollHeight;
           } else prazdnych++;
           proud.stav(res.pracuje ? {on: true, sloveso: '', sekund: null, tokeny: ''} : null);
-          stav.textContent = res.pracuje ? 'Claude pracuje…' : (res.bezi === false ? 'chat je zavřený' : 'čeká');
+          stav.textContent = res.relace && res.relace.majitel_offline
+            ? 'majitel má prostor vypnutý — čteš uložený chat'
+            : res.pracuje ? 'Claude pracuje…' : (res.bezi === false ? 'chat je zavřený' : 'čeká');
           stav.classList.toggle('pracuje', !!res.pracuje);
           hlavicka(res);
           if (res.pracuje) dalsi = 900;
