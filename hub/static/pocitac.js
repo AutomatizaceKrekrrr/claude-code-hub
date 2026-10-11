@@ -213,6 +213,34 @@
     })();
   }
 
+  /* Na počítači: žádost, která přišla dřív, než se okno otevřelo (nebo když zpráva
+     o ní nedoletěla), se najde dotazem na stav. Hlídá se jen při stupni „ptát se“. */
+  let watching = false;
+  function watchPending(io) {
+    if (watching) return;
+    watching = true;
+    const decide = async (id, volba) => {
+      const r = await io.api('pocitac', {action: 'rozhodnout', id, volba});
+      if (r && r.error) throw new Error(r.error);
+    };
+    (async function tick() {
+      let wait = 6000;
+      try {
+        if (!document.hidden) {
+          const st = await io.api('pocitac');
+          if (st.access === 'ptat' || (st.pending || []).length) {
+            for (const p of st.pending || []) showApproval(io, p, decide, 'z prostoru na serveru');
+            pruneApprovals(st.pending);
+            if ((st.pending || []).length) wait = 2000;
+          } else {
+            wait = 15000;
+          }
+        }
+      } catch (_) { wait = 15000; }
+      setTimeout(tick, wait);
+    })();
+  }
+
   function simpleNotice(io, msg) {
     if (msg.t === 'pocitac-oznameni') io.toast((msg.title ? msg.title + ': ' : '') + msg.message);
     else if (msg.t === 'pocitac-pristup') {
@@ -746,6 +774,6 @@
   }
 
   global.HubPocitac = {LEVELS, panel, ask, serverBlock, chip, levelLabel, ukol, pending,
-                       approvalFromHub, simpleNotice};
+                       approvalFromHub, simpleNotice, watchPending};
 
 })(window);

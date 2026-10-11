@@ -4044,6 +4044,7 @@ async function main() {
   await reload();
   themeFromState();
   autoUpdateAtStart();
+  if (!STATE.config.gateway_user) HubPocitac.watchPending(hubIO());
 
   $('search').oninput = (ev) => renderProjects(ev.target.value);
   $('btn-refresh').onclick = () => reload();
