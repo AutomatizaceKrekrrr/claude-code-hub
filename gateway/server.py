@@ -896,7 +896,7 @@ class Handler(BaseHTTPRequestHandler):
                 if method == "POST":
                     return self._gw_shared_change(user)
                 return self._gw_shared(user)
-            if route in ("/gw/relace", "/gw/relace/cteni", "/gw/relace/poslat"):
+            if route in ("/gw/relace", "/gw/relace/cteni", "/gw/relace/poslat", "/gw/relace/pokracovat"):
                 return self._gw_relace(route, method, user)
             if route == "/gw/tym":
                 return self._gw_team(method, user)
@@ -1627,6 +1627,9 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
                 return self._json({"error": "Nepodařilo se to uložit, zkus to prosím znovu."}, 500)
             return self._json(result)
 
+        if route == "/gw/relace/pokracovat":
+            return self._relace_pokracovat(method, user)
+
         # Čtení a psaní — vždycky přes majitelův hub, a jen když mu prostor běží
         # (kvůli dívání se neprobouzí spící prostor).
         if route == "/gw/relace/poslat":
@@ -1681,6 +1684,43 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         if tool == "sdilet_cteni":
             relace.pridej_stav(result, relace.verejne(user, rid, entry), _role, user)
         return self._json(result)
+
+    def _relace_pokracovat(self, method, user):
+        """„Pokračovat u sebe“: kopie sdíleného chatu do prostoru toho, kdo ho
+        sleduje. Chat se zabalí z majitelova domova a předá hubu v prostoru
+        žadatele (`prenos_prijmout`, jako chat z počítače) — Claude v něm naváže,
+        kde skončil, a majitelův chat se nijak nemění. Stačí právo číst."""
+        import base64
+        from hub import prenos
+        from . import workspace
+        if method != "POST" or not self._account_post_ok():
+            return self._json({"error": "Tohle jde jen z hubu."}, 403)
+        form = self._read_form()
+        try:
+            entry, _role = relace.ziskat(user, str(form.get("id") or ""))
+        except ValueError as exc:
+            return self._json({"error": str(exc)}, 403)
+        owner = shared.ACCOUNTS.by_id(entry.get("owner")) if shared.ACCOUNTS else None
+        if not owner or not relace.prepis_offline(owner, entry.get("chat")):
+            return self._json({"error": "Chat už u majitele není, nemám co zkopírovat."}, 404)
+        try:
+            data, meta = prenos.zabal(os.path.join(workspace.home_for(owner), ".claude"),
+                                      entry["chat"], entry.get("titulek") or "Chat",
+                                      odkud=relace.jmeno(owner))
+        except ValueError as exc:
+            return self._json({"error": str(exc)}, 400)
+        parts = prenos.kusy(data)
+        try:
+            for i, chunk in enumerate(parts, 1):
+                result = mcp._hub_call(self, user, "prenos_prijmout", {
+                    "id": meta["id"], "part": i, "parts": len(parts),
+                    "zip": base64.b64encode(chunk).decode("ascii"),
+                    "from": relace.jmeno(owner)[:80],
+                    "title": ("Kopie: " + (entry.get("titulek") or "Chat"))[:120]}, timeout=180)
+        except mcp.ToolError as exc:
+            return self._json({"error": str(exc)}, 502)
+        relace._log(user, "pokracovat", str(form.get("id") or ""))
+        return self._json({"ok": True, "chat": meta["id"], "hotovo": bool((result or {}).get("hotovo"))})
 
     def _gw_shared_change(self, user):
         """Sdílené Obsidiany naklikáním (panel v hubu): založit, členové,

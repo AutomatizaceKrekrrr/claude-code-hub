@@ -1712,6 +1712,20 @@
       if (r.majitel_offline) chip('Uložený chat — psát jde, až ' + r.majitel + ' zapne prostor', 'offline');
       else chip(psat ? 'Smíš psát' : 'Jen čtení', psat ? 'pise' : '');
       if (r.diva && r.diva.length) chip('Dívá se i: ' + r.diva.join(', '), 'diva');
+      if (io.pokracovat) {
+        const b = el('button', 'relace-chip pokracovat', 'Pokračovat u sebe');
+        b.title = 'Zkopíruje chat do tvého prostoru a otevře ho jako tvůj vlastní — Claude v něm naváže, ' +
+          'kde skončil, a ty v něm můžeš psát dál. Chat ' + r.majitel + ' se nijak nezmění.';
+        b.onclick = async () => {
+          b.disabled = true;
+          b.textContent = 'Kopíruju…';
+          try { await io.pokracovat(share); }
+          catch (err) { io.notice(err.message); }
+          b.disabled = false;
+          b.textContent = 'Pokračovat u sebe';
+        };
+        lista.appendChild(b);
+      }
       const souboru = proud.prehled().soubory.length;
       if (souboru) chip('✎ ' + souboru + (souboru === 1 ? ' upravený soubor' : souboru < 5 ? ' upravené soubory' : ' upravených souborů'),
                          'soubory', proud.prehled().soubory.join('\n'));
@@ -1756,7 +1770,7 @@
           proud.stav(res.pracuje ? {on: true, sloveso: '', sekund: null, tokeny: ''} : null);
           stav.textContent = res.relace && res.relace.majitel_offline
             ? 'majitel má prostor vypnutý — čteš uložený chat'
-            : res.pracuje ? 'Claude pracuje…' : (res.bezi === false ? 'chat je zavřený' : 'čeká');
+            : res.pracuje ? 'Claude pracuje…' : (res.bezi === false ? 'majitel má chat zavřený — nikdo v něm teď nepíše' : 'čeká');
           stav.classList.toggle('pracuje', !!res.pracuje);
           hlavicka(res);
           if (res.pracuje) dalsi = 900;

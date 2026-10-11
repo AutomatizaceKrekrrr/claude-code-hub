@@ -1678,6 +1678,14 @@ function aktivujSdileny(st) {
   if (!st.viewer) {
     st.viewer = HubCteni.openSdilene({
       host: st.pane, gw: relaceGw, notice: toast, imageUrl, openLink, copy: copyText,
+      // Kopie sdíleného chatu do mého prostoru: pokračuju v něm sám, majitelův zůstává.
+      pokracovat: async (share) => {
+        const r = await relaceGw('/pokracovat', {id: share.id});
+        if (!r || !r.chat) throw new Error('Chat se nepodařilo zkopírovat.');
+        await otevriPrenesenyChat(r.chat);
+        await prenosApi({akce: 'hotovo', chat: r.chat}).catch(() => {});
+        toast('Chat je u tebe. Pokračuješ v něm sám, ' + share.majitel + ' ho má dál po svém.');
+      },
     }, st.share);
   } else st.viewer.wake();
 }

@@ -4043,3 +4043,6 @@ select.set-input.eleven-model { width: auto; min-width: 15rem; max-width: 100%; 
 .cteni-cizi .cteni-kdo { color: var(--kdo, var(--muted)); font-weight: 600; }
 .cteni-moje .cteni-kdo { text-align: right; }
 .relace-chip.offline { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+
+.relace-chip.pokracovat { cursor: pointer; background: var(--accent); color: #fff; border-color: transparent; }
+.relace-chip.pokracovat:disabled { opacity: .6; cursor: default; }
