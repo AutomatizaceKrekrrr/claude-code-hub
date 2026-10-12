@@ -1901,6 +1901,10 @@
     let dirty = true;        // je co přeměřit (jinak se sahá jen na regexy)
 
     function fitOver() {
+      // Ve čtení drží rezervaci na nule apply() (terminál má celou plochu).
+      // Přeměření z psaní (autogrow) by si ji bralo zpátky a každé písmeno
+      // pak terminál zkrátilo a vrátilo — dvakrát celé TUI znovu.
+      if (tab.cteni && !tab.pane.classList.contains('terminal')) return;
       // U cizího agenta se nepočítá, kolik řádků patří jeho vstupnímu poli —
       // to je měřené na Claudeovi. own = 0 znamená „nepřekrývat nic",
       // takže se terminál zkrátí přesně o výšku bubliny.
