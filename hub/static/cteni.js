@@ -29,6 +29,18 @@
     peer: '✉', hub: '↻',
   };
 
+  // Každý člověk sdíleného chatu má svou barvu — stejnou v bublinách i v hlavičce.
+  const KDO_PALETA = ['#a371f7', '#3fb950', '#e0843c', '#2bb3a8', '#e05d8a', '#d29922'];
+  function kdoBarva(jmeno) {
+    let h = 0;
+    for (const ch of String(jmeno || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return KDO_PALETA[h % KDO_PALETA.length];
+  }
+  function inicialy(jmeno) {
+    const casti = String(jmeno || '?').trim().split(/\s+/);
+    return ((casti[0] || '?')[0] + (casti.length > 1 ? casti[casti.length - 1][0] : '')).toUpperCase();
+  }
+
   function el(tag, cls, text) {
     const node = document.createElement(tag);
     if (cls) node.className = cls;
@@ -591,12 +603,6 @@
        jako „[Jméno] text“ (gateway/relace.py → sdilet_poslat); co prefix nemá,
        napsal majitel. Moje bubliny jsou vpravo v mé barvě, cizí vlevo a každý
        člověk má svou, vždy se jménem nad bublinou. */
-    const KDO_PALETA = ['#a371f7', '#3fb950', '#e0843c', '#2bb3a8', '#e05d8a', '#d29922'];
-    function kdoBarva(jmeno) {
-      let h = 0;
-      for (const ch of String(jmeno || '')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
-      return KDO_PALETA[h % KDO_PALETA.length];
-    }
     function bublina(b, cls, stitek) {
       const row = el('div', 'cteni-me' + (cls ? ' ' + cls : ''));
       let kdo = '';
@@ -1628,19 +1634,27 @@
     const box = host || el('div', 'onb set-modal cteni-modal relace-modal');
     const telo = `
           <div class="cteni-scroll"><div class="cteni-flow"></div></div>
+          <div class="relace-pisou" hidden></div>
           <div class="cteni-write">
             <textarea class="cteni-input" rows="1" spellcheck="false" autocomplete="off"
                       data-form-type="other" data-1p-ignore data-lpignore="true"></textarea>
             <button class="cteni-send" title="Odeslat (Enter)">↑</button>
           </div>`;
+    /* Jeden řádek: čí chat a co smíš · stav (jednou, s tečkou) · kdo je tu · akce. */
+    const lista = `
+        <div class="relace-lista">
+          <span class="relace-stav"></span>
+          <span class="spacer"></span>
+          <div class="relace-lidi"></div>
+          <div class="relace-akce"></div>
+        </div>`;
     box.innerHTML = host ? `
       <div class="relace-hlava">
-        <span class="relace-stitek">Sdílené</span>
+        <span class="relace-avatar"></span>
         <span class="relace-kdo"></span>
-        <span class="spacer"></span>
-        <span class="relace-stav"></span>
+        <span class="relace-pravo"></span>
+        ${lista}
       </div>
-      <div class="relace-lista"></div>
       <div class="relace-telo">${telo}</div>` : `
       <div class="onb-box">
         <div class="onb-head">
@@ -1650,23 +1664,31 @@
             <div class="onb-sub"></div>
           </div>
           <span class="spacer"></span>
-          <span class="relace-stav"></span>
+          <span class="relace-pravo"></span>
           <button class="set-x cteni-close" title="Zavřít (Esc)">×</button>
         </div>
-        <div class="relace-lista"></div>
+        ${lista}
         <div class="onb-body">${telo}</div>
       </div>`;
     if (!host) document.body.appendChild(box);
     const q = (sel) => box.querySelector(sel);
-    if (host) q('.relace-kdo').textContent = 'od ' + share.majitel;
-    else {
+    if (host) {
+      const av = q('.relace-avatar');
+      av.textContent = inicialy(share.majitel);
+      av.style.setProperty('--kdo', kdoBarva(share.majitel));
+      q('.relace-kdo').textContent = 'Sdílí ' + share.majitel;
+      q('.relace-kdo').title = 'Chat běží u ' + share.majitel + ', ty ho sleduješ.';
+    } else {
       q('.onb-title').textContent = share.titulek || 'Sdílený chat';
       q('.onb-sub').textContent = share.majitel + ' ti ho sdílí';
     }
     const scroll = q('.cteni-scroll');
     const pole = q('.cteni-input');
     const stav = q('.relace-stav');
-    const lista = q('.relace-lista');
+    const pravo = q('.relace-pravo');
+    const lidi = q('.relace-lidi');
+    const akce = q('.relace-akce');
+    const pisou = q('.relace-pisou');
     let zivy = true, uDna = true, odkud = 0, psat = share.role === 'pise', prazdnych = 0;
 
     const sdilenoInfo = {ja: share.ja || '', majitel: share.majitel};
@@ -1678,6 +1700,7 @@
 
     const zavrit = () => {
       zivy = false;
+      clearInterval(prit);
       clearTimeout(timer);
       proud.stav(null);
       proud.zavri();
@@ -1693,11 +1716,14 @@
       box.addEventListener('click', (ev) => { if (ev.target === box) zavrit(); });
     }
 
+    let offline = false;
     function psaniPole() {
       q('.cteni-write').hidden = !psat;
-      pole.placeholder = psat
-        ? `Napiš do chatu (uvidí to ${share.majitel} i Claude)…`
-        : '';
+      pole.disabled = offline;
+      q('.cteni-send').disabled = offline;
+      pole.placeholder = offline
+        ? `Psát půjde, až ${share.majitel} zapne prostor`
+        : psat ? `Napiš do chatu (uvidí to ${share.majitel} i Claude)…` : '';
     }
     psaniPole();
     async function odeslat() {
@@ -1712,7 +1738,7 @@
           io.notice(r.zprava || 'Majitel má prostor vypnutý — zpráva by nikam nedošla.');
           return;
         }
-        stav.textContent = 'zpráva odeslána';
+        nastavStav('Zpráva odeslána', 'ceka');
       } catch (err) {
         pole.value = text;
         io.notice(err.message);
@@ -1723,57 +1749,91 @@
     pole.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter' && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); odeslat(); }
     });
+    let pisuOd = 0;
     pole.addEventListener('input', () => {
+      pisuOd = Date.now();
       pole.style.height = 'auto';
       pole.style.height = Math.min(pole.scrollHeight, 160) + 'px';
     });
+
+    /* Stav jednou a s barevnou tečkou: pracuje / čeká / zavřený chat / vypnutý prostor / chyba. */
+    function nastavStav(text, druh) {
+      stav.textContent = text;
+      stav.className = 'relace-stav' + (druh ? ' ' + druh : '');
+    }
+
+    /* Akce se staví jednou a jen se schovávají — překreslování pod kurzorem by rušilo klik. */
+    const tlZapnout = el('button', 'relace-btn hlavni');
+    tlZapnout.hidden = true;
+    tlZapnout.onclick = async () => {
+      const puvodni = tlZapnout.textContent;
+      tlZapnout.disabled = true;
+      tlZapnout.textContent = 'Zapínám…';
+      nastavStav('zapínám…', 'pracuje');
+      try { await io.zapnout(share); tik(true); }
+      catch (err) { io.notice(err.message); }
+      tlZapnout.disabled = false;
+      tlZapnout.textContent = puvodni;
+    };
+    const tlPokracovat = el('button', 'relace-btn', 'Pokračovat u sebe');
+    tlPokracovat.hidden = !io.pokracovat;
+    tlPokracovat.title = 'Zkopíruje chat do tvého prostoru a otevře ho jako tvůj vlastní — Claude v něm naváže, ' +
+      'kde skončil, a ty v něm můžeš psát dál. Chat ' + share.majitel + ' se nijak nezmění.';
+    tlPokracovat.onclick = async () => {
+      tlPokracovat.disabled = true;
+      tlPokracovat.textContent = 'Kopíruju…';
+      try { await io.pokracovat(share); }
+      catch (err) { io.notice(err.message); }
+      tlPokracovat.disabled = false;
+      tlPokracovat.textContent = 'Pokračovat u sebe';
+    };
+    const tlSoubory = el('span', 'relace-soubory');
+    tlSoubory.hidden = true;
+    akce.append(tlSoubory, tlPokracovat, tlZapnout);
+
+    // Kdo je v chatu (kromě mě) a kdo zrovna píše; kreslí se jen při změně.
+    let lidiKlic = '';
+    function prihomni(diva, pisi) {
+      const ja = sdilenoInfo.ja;
+      diva = (diva || []).filter((j) => j && j !== ja);
+      pisi = (pisi || []).filter((j) => j && j !== ja);
+      const klic = JSON.stringify([diva, pisi]);
+      if (klic === lidiKlic) return;
+      lidiKlic = klic;
+      lidi.textContent = '';
+      lidi.hidden = !diva.length;
+      for (const jmeno of diva.slice(0, 5)) {
+        const a = el('span', 'relace-avatar mini' + (pisi.includes(jmeno) ? ' pise' : ''), inicialy(jmeno));
+        a.style.setProperty('--kdo', kdoBarva(jmeno));
+        a.title = jmeno + (pisi.includes(jmeno) ? ' — píše' : ' — je tu');
+        lidi.appendChild(a);
+      }
+      if (diva.length > 5) lidi.appendChild(el('span', 'relace-avatar mini vic', '+' + (diva.length - 5)));
+      lidi.title = 'Teď se dívá: ' + diva.join(', ');
+      pisou.hidden = !pisi.length;
+      pisou.textContent = pisi.length ? (pisi.length === 1 ? pisi[0] + ' píše' : pisi.join(', ') + ' píšou') : '';
+    }
 
     function hlavicka(res) {
       const r = res.relace;
       if (!r) return;
       psat = !!r.psat;
+      offline = !!r.majitel_offline;
       psaniPole();
-      lista.textContent = '';
-      const chip = (text, cls, title) => {
-        const c = el('span', 'relace-chip' + (cls ? ' ' + cls : ''), text);
-        if (title) c.title = title;
-        lista.appendChild(c);
-      };
-      chip('Sdílený chat', 'sdileny', 'Chat běží u ' + r.majitel + ', ty ho sleduješ.');
-      if (r.majitel_offline) chip('Uložený chat — psát jde, až ' + r.majitel + ' zapne prostor', 'offline');
-      else chip(psat ? 'Smíš psát' : 'Jen čtení', psat ? 'pise' : '');
-      if (r.diva && r.diva.length) chip('Dívá se i: ' + r.diva.join(', '), 'diva');
-      if (io.zapnout && (res.bezi === false || r.majitel_offline)) {
-        const z = el('button', 'relace-chip pokracovat', r.majitel_offline ? 'Zapnout prostor ' + r.majitel : 'Zapnout chat');
-        z.title = 'Spustí ' + r.majitel + ' prostor (když spí) a otevře v něm tenhle chat — Claude naváže, ' +
+      pravo.textContent = psat ? 'smíš psát' : 'jen čtení';
+      pravo.className = 'relace-pravo' + (psat ? ' pise' : '');
+      prihomni(r.diva, r.pisou);
+      const zapnout = !!io.zapnout && (res.bezi === false || offline);
+      tlZapnout.hidden = !zapnout;
+      if (zapnout && !tlZapnout.disabled) {
+        tlZapnout.textContent = offline ? 'Zapnout prostor' : 'Zapnout chat';
+        tlZapnout.title = 'Spustí ' + share.majitel + ' prostor (když spí) a otevře v něm tenhle chat — Claude naváže, ' +
           'kde skončil. Psát do něj smí jen ten, kdo na to má právo.';
-        z.onclick = async () => {
-          z.disabled = true;
-          z.textContent = 'Zapínám…';
-          stav.textContent = 'zapínám…';
-          try { await io.zapnout(share); tik(true); }
-          catch (err) { io.notice(err.message); }
-          z.disabled = false;
-        };
-        lista.appendChild(z);
       }
-      if (io.pokracovat) {
-        const b = el('button', 'relace-chip pokracovat', 'Pokračovat u sebe');
-        b.title = 'Zkopíruje chat do tvého prostoru a otevře ho jako tvůj vlastní — Claude v něm naváže, ' +
-          'kde skončil, a ty v něm můžeš psát dál. Chat ' + r.majitel + ' se nijak nezmění.';
-        b.onclick = async () => {
-          b.disabled = true;
-          b.textContent = 'Kopíruju…';
-          try { await io.pokracovat(share); }
-          catch (err) { io.notice(err.message); }
-          b.disabled = false;
-          b.textContent = 'Pokračovat u sebe';
-        };
-        lista.appendChild(b);
-      }
-      const souboru = proud.prehled().soubory.length;
-      if (souboru) chip('✎ ' + souboru + (souboru === 1 ? ' upravený soubor' : souboru < 5 ? ' upravené soubory' : ' upravených souborů'),
-                         'soubory', proud.prehled().soubory.join('\n'));
+      const soubory = proud.prehled().soubory, n = soubory.length;
+      tlSoubory.hidden = !n;
+      tlSoubory.textContent = '✎ ' + n + (n === 1 ? ' soubor' : n < 5 ? ' soubory' : ' souborů');
+      tlSoubory.title = 'Upravené soubory:\n' + soubory.join('\n');
     }
 
     // Kód, který Claude napsal (Edit, Write), se rozbalí sám — kvůli tomu sdílíš.
@@ -1788,6 +1848,15 @@
       }
     }
 
+    // Přítomnost: i když jen čtu, jednou za 3 s se hlásím a dostanu, kdo je tu a kdo píše.
+    const prit = setInterval(async () => {
+      if (!zivy || document.hidden || (host && !host.classList.contains('active'))) return;
+      try {
+        const r = await io.gw('/pritomnost', {id: share.id, pise: psat && !offline && Date.now() - pisuOd < 4000});
+        if (zivy) prihomni(r.diva, r.pisou);
+      } catch (_) { /* příští pokus */ }
+    }, 3000);
+
     let timer = null, ceka = false;
     async function tik(hned) {
       if (!zivy || ceka) return;
@@ -1800,7 +1869,7 @@
         const res = await io.gw('/cteni?id=' + encodeURIComponent(share.id) + '&from=' + odkud);
         if (!zivy) return;
         if (res.offline) {
-          stav.textContent = 'majitel je offline';
+          nastavStav(share.majitel + ' je offline', 'vypnuto');
           proud.stav(null);
         } else {
           // Jméno, podle kterého se pozná, které bubliny jsou moje — dřív než se kreslí.
@@ -1813,15 +1882,15 @@
             if (uDna) scroll.scrollTop = scroll.scrollHeight;
           } else prazdnych++;
           proud.stav(res.pracuje ? {on: true, sloveso: '', sekund: null, tokeny: ''} : null);
-          stav.textContent = res.relace && res.relace.majitel_offline
-            ? 'majitel má prostor vypnutý — čteš uložený chat'
-            : res.pracuje ? 'Claude pracuje…' : (res.bezi === false ? 'majitel má chat zavřený — nikdo v něm teď nepíše' : 'čeká');
-          stav.classList.toggle('pracuje', !!res.pracuje);
+          if (res.relace && res.relace.majitel_offline) nastavStav('Prostor je vypnutý — čteš uložený chat', 'vypnuto');
+          else if (res.pracuje) nastavStav('Claude pracuje…', 'pracuje');
+          else if (res.bezi === false) nastavStav('Chat je zavřený — nikdo v něm teď nepracuje', 'zavreno');
+          else nastavStav('Čeká na zprávu', 'ceka');
           hlavicka(res);
           if (res.pracuje) dalsi = 900;
         }
       } catch (err) {
-        stav.textContent = err.message;
+        nastavStav(err.message, 'chyba');
         dalsi = 5000;
       } finally {
         ceka = false;

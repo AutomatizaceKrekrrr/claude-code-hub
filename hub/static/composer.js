@@ -2220,6 +2220,7 @@
 
     input.addEventListener('input', autogrow);
     input.addEventListener('input', nazorPriPsani);
+    input.addEventListener('input', () => { if (io.pise) io.pise(); });
     input.addEventListener('paste', (ev) => {
       const cd = ev.clipboardData;
       const files = cd && cd.files;

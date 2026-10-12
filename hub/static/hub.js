@@ -1548,6 +1548,21 @@ async function loadRelace() {
 }
 let relaceHotovo = false;
 
+/* Majitel se v sdíleném chatu hlásí taky (kdo se dívá, kdo píše) — jednou za pár
+   sekund, jen z aktivního tabu a ne když je okno skryté. „Píše“ = úhoz v posledních 4 s. */
+let relacePritTimer = null;
+function relacePritomnost() {
+  if (!onServer() || document.hidden || !ACTIVE) return;
+  const rel = relaceTabu(ACTIVE);
+  if (!rel) return;
+  const pise = Date.now() - (ACTIVE.pisuOd || 0) < 4000;
+  relaceGw('/pritomnost', {id: rel.id, pise}).then((r) => {
+    const a = JSON.stringify([rel.diva, rel.pisou]);
+    rel.diva = r.diva || []; rel.pisou = r.pisou || [];
+    if (JSON.stringify([rel.diva, rel.pisou]) !== a && ACTIVE) renderPrehled(ACTIVE);
+  }).catch(() => {});
+}
+
 function relaceTabu(tab) {
   const chat = tab && (tab.chat || tab.resume);
   return chat ? RELACE.moje.find((r) => r.chat === chat) : null;
@@ -1887,16 +1902,16 @@ function prehledHtml(tab, box) {
       b.onclick = () => sdiletChat(tab);
       s.appendChild(b);
     } else {
+      // U každého člena: je tu (zelená tečka) / píše teď (pulzuje) / není.
       for (const c of rel.clenove) {
+        const jm = c.name || c.email;
+        const pise = (rel.pisou || []).includes(jm), tu = pise || (rel.diva || []).includes(jm);
         const r = mk('div', 'pr-radek pr-clen');
-        r.append(mk('span', 'pr-text', c.name || c.email),
-                 mk('span', 'pr-druh', c.pise ? 'smí psát' : 'čte'));
+        r.append(mk('span', 'pr-tecka' + (pise ? ' pise' : tu ? ' tu' : '')),
+                 mk('span', 'pr-text', jm),
+                 mk('span', 'pr-druh', pise ? 'píše…' : tu ? 'je tu' : (c.pise ? 'smí psát' : 'čte')));
+        r.title = pise ? jm + ' právě píše' : tu ? jm + ' se právě dívá' : jm + ' tu teď není';
         s.appendChild(r);
-      }
-      if (rel.diva.length) {
-        const d = mk('div', 'pr-radek bezi');
-        d.append(stavIco('bezi'), mk('span', 'pr-text', 'Právě se dívá: ' + rel.diva.join(', ')));
-        s.appendChild(d);
       }
       const btns = mk('div', 'pr-sdileni-btns');
       const e = mk('button', 'btn ghost pr-sdilet', 'Upravit…');
@@ -2623,6 +2638,7 @@ async function reload() {
   if (!prenosTimer) { prenosTimer = setInterval(() => { if (!document.hidden) prenosPoll(); }, 12000); setTimeout(prenosPoll, 3000); }
   if (onServer() && !relaceTimer) {
     relaceTimer = setInterval(() => { if (!document.hidden) loadRelace(); }, 5000);
+    relacePritTimer = setInterval(relacePritomnost, 3000);
     loadRelace();
   }
   if (!$('projekty-page').hidden) renderProjekty();
@@ -2794,6 +2810,8 @@ function createTab({kind, path, title, id, agent, model, background, bypass, mod
   if (kind === 'project' || kind.startsWith('slash:')) {
     tab.composer = HubComposer.install(tab, {
       send,
+      // Úhoz v bublině: sdílející vidí, že tu píšu.
+      pise: () => { tab.pisuOd = Date.now(); },
       online,
       menu: showMenu,
       upload: uploadFiles,

@@ -3660,13 +3660,46 @@ button.pr-radek:hover { background: var(--card-hover); color: var(--fg-bright); 
 .pr-clen { justify-content: space-between; }
 .relace-row .chat-meta { white-space: normal; }
 
-.relace-stav { color: var(--dim); font-size: 12.5px; margin-right: 6px; }
+.relace-stav { display: inline-flex; align-items: center; gap: 7px; color: var(--dim); font-size: 12.5px; min-width: 0; }
+.relace-stav::before { content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
 .relace-stav.pracuje { color: var(--accent); }
-.relace-lista { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 18px 0; }
-.relace-chip { padding: 2px 10px; border: 1px solid var(--border); border-radius: 999px; color: var(--dim); font-size: 11.5px; }
-.relace-chip.sdileny { color: var(--accent); border-color: var(--accent); }
-.relace-chip.pise { color: var(--green); border-color: var(--green); }
-.relace-chip.soubory { cursor: help; }
+.relace-stav.pracuje::before { background: var(--accent); animation: relace-tep 1.2s ease-in-out infinite; }
+.relace-stav.ceka::before { background: var(--green); }
+.relace-stav.vypnuto, .relace-stav.zavreno { color: var(--fg); }
+.relace-stav.vypnuto::before { background: #d29922; }
+.relace-stav.chyba { color: var(--red, #f85149); }
+.relace-stav.chyba::before { background: var(--red, #f85149); }
+@keyframes relace-tep { 50% { opacity: .35; } }
+.relace-lista { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 18px; min-width: 0; }
+.relace-lidi { display: flex; align-items: center; cursor: default; }
+.relace-lidi[hidden] { display: none; }
+.relace-lidi .relace-avatar + .relace-avatar { margin-left: -6px; }
+.relace-akce { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.relace-avatar {
+  flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 50%;
+  font-size: 11px; font-weight: 700; color: #fff; background: var(--kdo, var(--accent)); letter-spacing: .02em;
+}
+.relace-avatar.mini { width: 24px; height: 24px; font-size: 10px; box-shadow: 0 0 0 2px var(--bg); }
+.relace-avatar.vic { background: var(--bg-card); color: var(--dim); }
+.relace-avatar.pise { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--kdo, var(--accent)); animation: relace-tep 1.2s ease-in-out infinite; }
+.relace-pravo { flex: none; padding: 1px 8px; border-radius: 999px; font-size: 11px; color: var(--dim); border: 1px solid var(--border); }
+.relace-pravo.pise { color: var(--green); border-color: color-mix(in srgb, var(--green) 55%, transparent); }
+.relace-btn {
+  padding: 5px 12px; border-radius: 7px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+  color: var(--fg-bright); background: transparent; border: 1px solid var(--border);
+}
+.relace-btn:hover { border-color: var(--accent); }
+.relace-btn.hlavni { background: var(--accent); border-color: var(--accent); color: #fff; }
+.relace-btn.hlavni:hover { filter: brightness(1.1); }
+.relace-btn:disabled { opacity: .6; cursor: default; }
+.relace-btn[hidden], .relace-soubory[hidden] { display: none; }
+.relace-soubory { font-size: 12px; color: var(--dim); cursor: help; white-space: nowrap; }
+.pr-tecka { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--border); margin-right: 8px; }
+.pr-tecka.tu { background: var(--green); }
+.pr-tecka.pise { background: var(--accent); animation: relace-tep 1.2s ease-in-out infinite; }
+.relace-pisou { flex: none; padding: 0 20px 4px; font-size: 12px; color: var(--dim); font-style: italic; }
+.relace-pisou::after { content: "…"; }
+.relace-pisou[hidden] { display: none; }
 
 /* Sdílené chaty jako taby: štítek „Sdílené · Jméno“ je vidět hned na tabu. */
 .tab-sdileny { max-width: 280px; }
@@ -3687,18 +3720,19 @@ button.pr-radek:hover { background: var(--card-hover); color: var(--fg-bright); 
 .tab-sdilet.on { color: var(--accent); }
 .tab-sdilet { margin-left: auto; }
 .relace-tab.active { display: flex; flex-direction: column; background: var(--bg); }
-.relace-hlava { display: flex; align-items: center; gap: 8px; padding: 8px 16px 0; flex: none; }
-.relace-stitek { padding: 1px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.relace-hlava { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 6px 16px; flex: none;
+  border-bottom: 1px solid var(--border); }
+.relace-hlava .relace-lista { flex: 1; padding: 0; min-width: 0; }
 .relace-kdo { color: var(--fg-bright); font-size: 13px; font-weight: 600; }
-.relace-tab .relace-lista { flex: none; padding: 6px 16px 0; }
+
 .relace-telo { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .relace-telo .cteni-scroll { flex: 1; min-height: 0; padding: 14px 20px 12px; }
 .open-stitek { display: block; font-size: 10.5px; font-weight: 600; color: var(--accent); line-height: 1.2; }
 .open-tab.sdileny .open-name { line-height: 1.25; }
 @media (max-width: 820px) {
   .relace-telo .cteni-scroll { padding: 10px 12px 8px; }
-  .relace-hlava, .relace-tab .relace-lista { padding-left: 12px; padding-right: 12px; }
+  .relace-hlava { padding-left: 12px; padding-right: 12px; }
+  .relace-hlava .relace-lista { flex-basis: 100%; }
 }
 
 /* Claudíci mluví a bičují (claudici.js): bublina s větou, bič, práásk. */
@@ -4048,7 +4082,3 @@ select.set-input.eleven-model { width: auto; min-width: 15rem; max-width: 100%; 
 }
 .cteni-cizi .cteni-kdo { color: var(--kdo, var(--muted)); font-weight: 600; }
 .cteni-moje .cteni-kdo { text-align: right; }
-.relace-chip.offline { background: color-mix(in srgb, var(--accent) 18%, transparent); }
-
-.relace-chip.pokracovat { cursor: pointer; background: var(--accent); color: #fff; border-color: transparent; }
-.relace-chip.pokracovat:disabled { opacity: .6; cursor: default; }

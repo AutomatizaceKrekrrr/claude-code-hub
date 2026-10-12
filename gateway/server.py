@@ -897,7 +897,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._gw_shared_change(user)
                 return self._gw_shared(user)
             if route in ("/gw/relace", "/gw/relace/cteni", "/gw/relace/poslat", "/gw/relace/pokracovat",
-                        "/gw/relace/zapnout"):
+                        "/gw/relace/zapnout", "/gw/relace/pritomnost"):
                 return self._gw_relace(route, method, user)
             if route == "/gw/tym":
                 return self._gw_team(method, user)
@@ -1632,6 +1632,20 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
             return self._relace_pokracovat(method, user)
         if route == "/gw/relace/zapnout":
             return self._relace_zapnout(method, user)
+        if route == "/gw/relace/pritomnost":
+            if method != "POST" or not self._account_post_ok():
+                return self._json({"error": "Jen z hubu."}, 403)
+            form = self._read_form()
+            try:
+                result = relace.pritomnost(user, str(form.get("id") or ""),
+                                           str(form.get("pise") or "").lower() in ("1", "true"))
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, 403)
+            # Odpověď rovnou nese, kdo je v chatu — okno se obnoví bez čekání na další dotaz.
+            entry, _r = relace.ziskat(user, str(form.get("id") or ""))
+            result["diva"] = relace.verejne(user, str(form.get("id") or ""), entry)["diva"]
+            result["pisou"] = relace.verejne(user, str(form.get("id") or ""), entry)["pisou"]
+            return self._json(result)
 
         # Čtení a psaní — vždycky přes majitelův hub, a jen když mu prostor běží
         # (kvůli dívání se neprobouzí spící prostor).

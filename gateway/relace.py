@@ -31,6 +31,8 @@ LOG = os.path.join(config.GATEWAY_DIR, "relace.jsonl")
 _LOCK = threading.Lock()
 _DIVA = {}                    # id relace → {uid: čas posledního dotazu}
 DIVA_S = 15.0                # po jak dlouhém tichu už se člověk nedívá
+_PISE = {}                    # id relace → {uid: čas, kdy naposled psal}
+PISE_S = 6.0                 # tak dlouho po posledním úhozu ještě „píše"
 
 
 @contextlib.contextmanager
@@ -107,12 +109,15 @@ def _public(rid, entry, user):
             members.append({"email": u["email"], "name": u.get("name", ""),
                             "pise": mid in entry.get("psat", [])})
     teď = time.time()
+    # Dívá se každý kromě mě, i majitel (ten se hlásí z vlastního hubu).
     diva = [_jmeno(m) for m, t in (_DIVA.get(rid) or {}).items()
             if teď - t < DIVA_S and m != uid]
+    pisou = [_jmeno(m) for m, t in (_PISE.get(rid) or {}).items()
+             if teď - t < PISE_S and m != uid]
     return {"id": rid, "chat": entry.get("chat", ""), "titulek": entry.get("titulek") or "Chat",
             "majitel": (owner.get("name") or owner["email"]) if owner else "",
             "role": role(user, entry) or ("spravce" if _je_spravce(user) else ""),
-            "clenove": members, "diva": diva, "vytvoreno": entry.get("vytvoreno", 0)}
+            "clenove": members, "diva": diva, "pisou": pisou, "vytvoreno": entry.get("vytvoreno", 0)}
 
 
 def seznam(user):
@@ -203,6 +208,20 @@ def dival_se(user, rid):
     _DIVA.setdefault(rid, {})[int(user["id"])] = time.time()
 
 
+def pritomnost(user, rid, pise=False):
+    """Člověk je v chatu (a případně právě píše). Hlásí se z okna každých pár
+    sekund; píše smí jen ten, kdo smí psát — ostatním se „píše" nikdy neukáže."""
+    entry, r = ziskat(user, rid)
+    uid = int(user["id"])
+    teď = time.time()
+    _DIVA.setdefault(rid, {})[uid] = teď
+    if pise and r in ("majitel", "pise"):
+        _PISE.setdefault(rid, {})[uid] = teď
+    else:
+        (_PISE.get(rid) or {}).pop(uid, None)
+    return {"ok": True}
+
+
 def jmeno(user):
     return user.get("name") or user.get("email") or "?"
 
@@ -250,7 +269,7 @@ def pridej_stav(result, pub, moje_role, user=None, majitel_offline=False):
     jmenuju (podle toho viewer pozná, které bubliny jsou moje)."""
     psat = moje_role in ("majitel", "pise") and not majitel_offline
     result["relace"] = {"majitel": pub["majitel"], "titulek": pub["titulek"],
-                        "clenove": pub["clenove"], "diva": pub["diva"],
+                        "clenove": pub["clenove"], "diva": pub["diva"], "pisou": pub["pisou"],
                         "role": moje_role, "psat": psat, "ja": jmeno(user) if user else "",
                         "majitel_offline": bool(majitel_offline)}
 
