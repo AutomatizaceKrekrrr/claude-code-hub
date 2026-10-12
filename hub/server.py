@@ -878,7 +878,7 @@ class Handler(BaseHTTPRequestHandler):
                            # Poloha a stav okna s prohlížečem — drží hub, ne
                            # localStorage (port hubu se mění s každým startem).
                            "prohlizec_okno": core.CONFIG.get("prohlizec_okno") or {},
-                           "auto_update": core.CONFIG.get("auto_update", True) is not False,
+                           "auto_update": core.CONFIG.get("auto_update", True) is not False and not core.TEST_MODE,
                            "na_pozadi": bool(core.CONFIG.get("na_pozadi")),
                            "bez_spanku": bool(core.CONFIG.get("bez_spanku")),
                            "tray": core.CONFIG.get("tray", True) is not False,

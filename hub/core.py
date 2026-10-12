@@ -2151,6 +2151,11 @@ def version():
     hlásil pořád tu starou: „aktualizováno" a hned pod tím „je dostupná novější".
     """
     path = os.path.join(CLAUDE_DIR, "hub", "__init__.py")
+    if TEST_MODE:
+        # Zkušební instance má vlastní kód; verze nainstalovaného hubu vedle ní
+        # s tím nesouvisí — porovnávala se s GitHubem a spustila aktualizaci
+        # skutečné instalace.
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "__init__.py")
     if on_gateway():
         # V prostoru běží hub ze zdroje serveru. Kopie v domově (po dřívějším
         # tlačítku Aktualizovat) s tím nemá nic společného — hlásila 2.4.2 nad
@@ -2399,6 +2404,10 @@ def update_state():
 
 
 def start_update():
+    if TEST_MODE:
+        # Zkušební kopie nic neinstaluje: update_hub přepisuje ~/.claude.
+        return start_job("update", lambda: {
+            "ok": False, "detail": "Zkušební instance (--test) se neaktualizuje."})
     return start_job("update", update_hub)
 
 

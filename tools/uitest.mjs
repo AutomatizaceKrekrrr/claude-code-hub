@@ -135,7 +135,14 @@ for (const jmeno of profily) {
     t('terminálový tab jde otevřít', true);
 
     // Tab s agentem — teprve v něm je bublina s polem na psaní.
-    await page.click('#btn-new-agent');
+    // Na úzkém rozvržení (telefon) je #btn-new-agent schovaný — nový chat je pod „+" v liště.
+    if (await page.locator('#btn-new-agent').isVisible()) {
+      await page.click('#btn-new-agent');
+    } else {
+      await page.click('#btn-new-top');
+      await page.waitForTimeout(450);     // hub první 0,3 s po otevření menu klik ignoruje (MENU_ARM_MS)
+      await page.locator('.ctxmenu button').first().click();
+    }
     const bublina = page.locator('.pane.active .composer.on .composer-input');
     /* Claude Code se u nové složky ptá na důvěru a bublina na to správně
        čeká — kartu je tedy potřeba odklepnout stejně, jako by to udělal
@@ -236,13 +243,26 @@ for (const jmeno of profily) {
         await page.waitForTimeout(400);
         return page.evaluate(() => document.body.classList.contains('drawer-open'));
       })());
-      await page.keyboard.press('Escape');
-      t('řádek kláves je vidět',
-        await page.locator('.pane.active .composer-keys .composer-key').first().isVisible());
+      // Escape šuplík nezavře a otevřený zakrývá i své tlačítko — zavře ho klepnutí vedle něj
+      // (jinak zakrývá řádek kláves i Nastavení).
+      const sirka = await page.evaluate(() => innerWidth);
+      await page.mouse.click(sirka - 4, 400);
+      await page.waitForTimeout(400);
+      // Ve čtení (výchozí) je řádek kláves schovaný záměrně (hub.css, .cteni-on .composer-keys);
+      // vidět má být jen v terminálu.
+      const cteni = await page.locator('.pane.active.cteni-on').count() > 0;
+      const klavesy = await page.locator('.pane.active .composer-keys .composer-key').first().isVisible();
+      t(cteni ? 'řádek kláves je ve čtení schovaný (záměr)' : 'řádek kláves je vidět', cteni ? !klavesy : klavesy);
     }
 
     // Nastavení
-    await page.click('#btn-settings');
+    if (await page.locator('#btn-settings').isVisible()) {
+      await page.click('#btn-settings');
+    } else {                              // telefon: Nastavení je v nabídce „…" v liště
+      await page.click('#btn-menu');
+      await page.waitForTimeout(450);
+      await page.locator('.ctxmenu button', { hasText: 'Nastavení' }).first().click();
+    }
     await page.waitForTimeout(800);
     t('nastavení se otevře', await page.locator('.set-modal').isVisible());
     /* Sekce Účet: je na hubu na počítači i na serveru (telefon se od 2.1.0

@@ -308,9 +308,14 @@ def take():
 
 def _spawn(*extra):
     """Pustí novou instanci hubu, odpojenou od téhle."""
-    launcher = LAUNCHER if os.path.isfile(LAUNCHER) else os.path.abspath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir,
-                     "claude-hub.py"))
+    zdroj = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         os.pardir, "claude-hub.py"))
+    launcher = LAUNCHER if os.path.isfile(LAUNCHER) else zdroj
+    if core.TEST_MODE:
+        # Zkušební instance se restartuje sama ze sebe a zase jako zkušební —
+        # ne přes nainstalovaný spouštěč, který by pustil skutečný hub.
+        launcher = zdroj
+        extra = (*extra, "--test")
     if not os.path.isfile(launcher):
         raise RuntimeError("Nenašel jsem claude-hub.py, ze kterého se hub pouští.")
     argv = [sys.executable, launcher, *extra]
