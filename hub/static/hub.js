@@ -3177,7 +3177,24 @@ window.hubFirmaChat = () => openFirmaTab();
 
 function refit(tab) {
   if (!tab || tab.pane.offsetWidth === 0) return;
-  try { tab.fit.fit(); } catch (_) { return; }
+  /* Jiná šířka přeformátuje celý výpis (reflow) a Claude Code překreslí celé
+     TUI — při tažení okna to byla desetina vteřiny za každý krok. Jako VS Code
+     (TerminalResizeDebouncer): výška hned, šířka až po 100 ms klidu; krátký
+     výpis (nový tab) hned celý. */
+  let dims = null;
+  try { dims = tab.fit.proposeDimensions(); } catch (_) { return; }
+  if (dims && dims.cols !== tab.term.cols && !tab.sirkaHned &&
+      tab.term.buffer.normal.length >= 200) {
+    clearTimeout(tab.sirkaTimer);
+    tab.sirkaTimer = setTimeout(() => {
+      tab.sirkaHned = true;
+      refit(tab);
+      tab.sirkaHned = false;
+    }, 100);
+    if (dims.rows !== tab.term.rows && !isNaN(dims.rows)) tab.term.resize(tab.term.cols, dims.rows);
+  } else {
+    try { tab.fit.fit(); } catch (_) { return; }
+  }
   if (!tab.id) return;
   /* Stejný rozměr se posílat nemusí — a hlavně nemá: ConPTY na Windows
      překreslí při resize celou obrazovku i tehdy, když se nic nezměnilo.
