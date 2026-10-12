@@ -39,6 +39,7 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -205,6 +206,12 @@ GOOGLE_MCP_NAME = "google"
 # odmítne a přihlášení by padlo celé.
 GOOGLE_TOOLS = ["gmail", "drive", "calendar", "docs", "sheets", "slides",
                 "forms", "tasks", "contacts"]
+# Odkud smí workspace-mcp číst soubory k nahrání (Disk, přílohy Gmailu).
+# Bez toho jen z ~/.workspace-mcp/attachments a nahrání čehokoli, co Claude
+# vyrobí, končí na „Local file could not be accessed". Domov a /tmp (tam má
+# Claude Code scratchpad); Claude na oboje dosáhne i tak, nic se neotevírá.
+# „~" rozbalí až workspace-mcp — na serveru tak platí domov prostoru.
+GOOGLE_FILE_DIRS = os.pathsep.join(["~", tempfile.gettempdir()])
 _G = "https://www.googleapis.com/auth/"
 GOOGLE_SCOPES = ["openid", _G + "userinfo.email", _G + "userinfo.profile"] + [
     _G + s for s in (
@@ -757,14 +764,16 @@ def _ensure_google_server():
     env = (entry.get("env") or {}) if isinstance(entry, dict) else {}
     if isinstance(entry, dict) and entry.get("args") == args and \
             env.get("GOOGLE_OAUTH_CLIENT_ID") == cid and \
-            env.get("USER_GOOGLE_EMAIL", "") == default:
+            env.get("USER_GOOGLE_EMAIL", "") == default and \
+            env.get("ALLOWED_FILE_DIRS") == GOOGLE_FILE_DIRS:
         return {"ok": True}
     if entry:
         _run([claude, "mcp", "remove", GOOGLE_MCP_NAME, "-s", "user"], 30)
     extra = ["-e", f"USER_GOOGLE_EMAIL={default}"] if default else []
     r = _run([claude, "mcp", "add", GOOGLE_MCP_NAME, "-s", "user",
               "-e", f"GOOGLE_OAUTH_CLIENT_ID={cid}",
-              "-e", f"GOOGLE_OAUTH_CLIENT_SECRET={secret}", *extra,
+              "-e", f"GOOGLE_OAUTH_CLIENT_SECRET={secret}",
+              "-e", f"ALLOWED_FILE_DIRS={GOOGLE_FILE_DIRS}", *extra,
               "--", "uvx", *args])
     if r.returncode != 0:
         return {"ok": False, "detail": (r.stderr or r.stdout or "nepovedlo se").strip()[:300]}
@@ -1653,7 +1662,7 @@ def start_shared_sync():
 
 
 def _sync_on_start():
-    # Google napojený starší verzí hubu ještě nemá výchozí účet.
+    # Google napojený starší verzí hubu nemá výchozí účet ani ALLOWED_FILE_DIRS.
     try:
         if GOOGLE_MCP_NAME in _user_servers() and _google_accounts() and \
                 _claude() and google_client()[0]:
