@@ -24,6 +24,7 @@ import os
 import posixpath
 import re
 import secrets
+import socketserver
 import string
 import subprocess
 import struct
@@ -1743,6 +1744,16 @@ class HubHTTPServer(ThreadingHTTPServer):
         self.token = token
         self.remote = remote
         self.origins = set()
+
+    def server_bind(self):
+        # HTTPServer.server_bind volá socket.getfqdn() — zpětný dotaz do DNS na
+        # jméno počítače. Na některých sítích (VPN, macOS v CI) trvá desítky
+        # sekund a o tolik se zdrží každý start hubu, i restart po aktualizaci.
+        # Jméno serveru hub k ničemu nepotřebuje, stačí adresa.
+        socketserver.TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host
+        self.server_port = port
 
 
 def _zahrat_doctor():
