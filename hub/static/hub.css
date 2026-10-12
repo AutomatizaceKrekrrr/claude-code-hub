@@ -397,6 +397,12 @@ body { display: flex; flex-direction: column; }
    když potřebuje víc místa, než kolik zabírá Claudeovo vlastní vstupní pole. */
 .termbox { position: absolute; left: 8px; right: 0; top: 6px; bottom: 0; }
 .pane .xterm { height: 100%; }
+/* Ve čtení leží terminál pod vrstvou s konverzací a nikdo ho nevidí — ať se
+   nekreslí (jako skrytý terminál ve VS Code). Mimo obrazovkou ho xterm.js
+   přestane kreslit sám (hlídá viditelnost), výpis ale čte dál. Odsunutý, ne
+   display:none — rozvržení mu zůstane, takže se dál měří a Claude Code nedostane
+   jiné okno. Uhne pro dotaz (.asking) i pro terminál (.terminal). */
+.pane.cteni-on:not(.asking):not(.terminal) > .termbox { transform: translateX(-100000px); }
 /* Šipka dolů, když je výpis odrolovaný nahoru (hub.js, cteni.js). */
 .dolu {
   position: absolute; right: 16px; bottom: calc(var(--composer-h, 0px) + 14px);
