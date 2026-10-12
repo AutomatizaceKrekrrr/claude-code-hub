@@ -656,14 +656,16 @@
     function bublina(b, cls, stitek) {
       const row = el('div', 'cteni-me' + (cls ? ' ' + cls : ''));
       let kdo = '';
-      if (sdileny && !/fronta|ceka/.test(cls || '')) {
+      const sd = typeof sdileny === 'function' ? sdileny() : sdileny;
+      if (sd && !/fronta|ceka/.test(cls || '')) {
         const m = /^\[([^\]\n]{1,60})\]\s+([\s\S]*)$/.exec(b.text || '');
-        kdo = m ? m[1].trim() : (sdileny.majitel || '');
+        kdo = m ? m[1].trim() : (sd.majitel || '');
         if (m) b = Object.assign({}, b, {text: m[2]});
-        const moje = !!sdileny.ja && kdo.toLowerCase() === String(sdileny.ja).toLowerCase();
+        const moje = !!sd.ja && kdo.toLowerCase() === String(sd.ja).toLowerCase();
         row.classList.add(moje ? 'cteni-moje' : 'cteni-cizi');
-        if (!moje) row.style.setProperty('--kdo', kdoBarva(kdo));
-        row.appendChild(el('div', 'cteni-kdo', moje ? 'Ty' : kdo));
+        // Barva podle člověka (jméno z přihlášení), i u mých bublin; jméno se píše vždy.
+        row.style.setProperty('--kdo', kdoBarva(kdo));
+        row.appendChild(el('div', 'cteni-kdo', kdo));
       }
       const bubble = el('div', 'cteni-bubble');
       /* Přiložený obrázek se ukáže jako obrázek, ne jako cesta k souboru —
@@ -1422,6 +1424,7 @@
     let nacteno = false;
     const proud = flow(mount, io.imageUrl, {
       openLink: io.openLink, notice: io.notice, copy: io.copy, odpovez: io.odpovez,
+      sdileny: io.sdileny || null,
       zive: () => nacteno && !!global.HubHlas && global.HubHlas.auto.get() &&
                   (!io.aktivni || io.aktivni()),
       naPrehled: () => { if (io.prehled) io.prehled(); },

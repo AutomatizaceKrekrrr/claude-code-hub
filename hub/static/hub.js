@@ -2802,6 +2802,8 @@ function createTab({kind, path, title, id, agent, model, background, bypass, mod
       (agent || STATE.default_agent || 'claude') === 'claude') {
     tab.cteni = HubCteni.install(tab, {api, notice: toast, imageUrl, openLink, copy: copyText,
                                        aktivni: () => ACTIVE === tab,
+                                       // Majitelův chat, který už je sdílený: bubliny podle lidí.
+                                       sdileny: () => { const r = relaceTabu(tab); return r ? {ja: r.majitel, majitel: r.majitel} : null; },
                                        // Tlačítko rychlé odpovědi pod odpovědí Clauda.
                                        odpovez: (text) => !!(tab.composer && tab.composer.run(text + '\r')),
                                        // Panel Průběh vpravo (renderPrehled).
