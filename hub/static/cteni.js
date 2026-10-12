@@ -714,10 +714,13 @@
       if (m) potvrdMistni(m);
     }
     function zFronty(key) {
-      const i = cekajici.findIndex((c) => c.key === key);
-      if (i < 0) return;
-      cekajici[i].row.remove();
-      cekajici.splice(i, 1);
+      for (const seznam of [cekajici, ztraceneRadky]) {
+        const i = seznam.findIndex((c) => c.key === key);
+        if (i < 0) continue;
+        seznam[i].row.remove();
+        seznam.splice(i, 1);
+        return;
+      }
     }
 
     /* ── karty agentů ───────────────────────────────────────────────────── */
@@ -984,6 +987,9 @@
        frontou by před ní šel `dequeue`. Takové bubliny zůstanou vidět, ale
        řeknou pravdu: neodešly. */
     let zFrontyDalsi = false;
+    // Bubliny označené jako nedoručené. Kdyby zpráva přece jen došla (úsudek
+    // byl mylný, nebo ji po restartu doručil hub), bublina zmizí.
+    const ztraceneRadky = [];
     function ztracene(krome) {
       for (const c of cekajici.splice(0)) {
         if (c.key === krome) { c.row.remove(); continue; }
@@ -991,7 +997,22 @@
         c.row.classList.add('ztracena');
         const st = c.row.querySelector('.cteni-stitek');
         if (st) st.textContent = 'Nedoručeno — pošli to znovu.';
+        ztraceneRadky.push(c);
       }
+    }
+    /* Po restartu hub zprávy ze smazané fronty Claudovi doručil v připomínce
+       (hub/restart.py) — bubliny se přesunou do konverzace jako přečtené. */
+    function dorucenoPoRestartu(key) {
+      const c = cekajici.find((x) => x.key === key) || ztraceneRadky.find((x) => x.key === key);
+      if (!c) return;
+      for (const seznam of [cekajici, ztraceneRadky]) {
+        const i = seznam.indexOf(c);
+        if (i >= 0) seznam.splice(i, 1);
+      }
+      c.row.className = 'cteni-me mid';
+      const st = c.row.querySelector('.cteni-stitek');
+      if (st) st.textContent = '✓ Doručeno po restartu';
+      mount.appendChild(c.row);
     }
 
     function pridej(b) {
@@ -999,7 +1020,16 @@
         zFrontyDalsi = true;
         return;
       }
+      if (b.kind === 'souhrn') {
+        // Zhuštění konverzace — souhrn píše Claude Code, ne člověk.
+        const box = udelejNastroj({name: 'hub', title: 'Claude si zhustil konverzaci (souhrn)',
+                                   detail: b.text || ''});
+        box.classList.add('hub-pozn');
+        mount.appendChild(box);
+        return;
+      }
       if (b.kind === 'me') {
+        for (const key of b.doruceno || []) dorucenoPoRestartu(key);
         /* Stejná věta dvakrát za sebou: zařazení druhé do fronty se v přepisu
            často zapíše dřív než zadání první. Zadání pak vypadá jako „to, co
            jsem čekal z fronty" a druhou větu by smazalo. Když k němu ale máme
@@ -1025,10 +1055,11 @@
         }
         if (/^\[hub\] /.test(b.text || '')) {
           const text = b.text.slice(6);
-          const ulohy = (text.match(/^- /gm) || []).length;
+          const ulohy = (text.match(/^- (agent|hlídání|naplánované probuzení[^:\n]*|příkaz): /gm) || []).length;
           const box = udelejNastroj({name: 'hub',
             title: /restartoval/.test(text)
-              ? 'Appka se restartovala' + (ulohy ? ' — Claude navazuje na ' + pocet(ulohy, 'úlohu', 'úlohy', 'úloh') : '')
+              ? 'Appka se restartovala' + (ulohy ? ' — Claude navazuje na ' + pocet(ulohy, 'úlohu', 'úlohy', 'úloh')
+                : /přerušil tě/.test(text) ? ' — Claude navazuje na rozdělanou práci' : '')
               : text.split('\n')[0].slice(0, 120),
             detail: text});
           box.classList.add('hub-pozn');

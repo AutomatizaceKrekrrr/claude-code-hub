@@ -167,6 +167,15 @@ def _zprava_cloveka(obsah):
         blok["tichy"] = True             # potvrdí se, ale bublina se nekreslí
     if vlozene:
         blok["inline"] = vlozene
+    syrovy = _text_cloveka(obsah)
+    if syrovy.startswith("[hub] ") and "\n---\n" in syrovy:
+        # Připomínka po restartu (hub/restart.py) nese zprávy, které restart
+        # smazal z fronty, mezi řádky `---`. Stránka podle otisků pozná,
+        # které bubliny „ve frontě“ tím došly.
+        radky = syrovy.split("\n")
+        meze = [i for i, r in enumerate(radky) if r == "---"]
+        kusy = ["\n".join(radky[a + 1:b]).strip() for a, b in zip(meze, meze[1:])]
+        blok["doruceno"] = [_klic(*_obrazky(k)) for k in kusy if k]
     return blok
 
 
@@ -448,6 +457,12 @@ def _bloky_zpravy(entry):
     zprava = entry.get("message") or {}
     obsah = zprava.get("content")
     out = []
+
+    if druh == "user" and entry.get("isCompactSummary"):
+        # Souhrn po zhuštění konverzace píše Claude Code jako zprávu „od
+        # člověka“. Člověk ho nepsal — a čtení by podle něj usoudilo, že
+        # fronta zmizela, a čekající zprávu označilo za nedoručenou.
+        return [{"kind": "souhrn", "text": _zkrat(_text_cloveka(obsah) or "", MAX_TEXT)}]
 
     if druh == "user":
         if isinstance(obsah, str):

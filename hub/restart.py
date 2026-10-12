@@ -58,28 +58,162 @@ def _resume_for(hub, session):
     return session.resume or ""
 
 
-def _pokracuj(session):
-    """Zpráva pro Clauda po obnovení tabu, když mu restart zastavil úlohy na
-    pozadí (příkazy, hlídání, agenty). Bez úloh ''. Úlohy jsou děti procesu
-    Claude Code, takže restart hubu je vždycky ukončí — sám by o tom nevěděl
-    a čekal by na hlášky, které už nepřijdou."""
+# Konec přepisu, ve kterém se hledá, jestli Claude zrovna pracoval.
+_KONEC_PREPISU = 4 * 1024 * 1024
+
+
+def _je_zadani(entry):
+    """Zadání od člověka (ne výsledek nástroje, meta řádek ani podkonverzace)."""
+    if entry.get("type") != "user" or entry.get("isMeta") or entry.get("isSidechain") \
+            or entry.get("isCompactSummary"):
+        return False
+    obsah = (entry.get("message") or {}).get("content")
+    if isinstance(obsah, list) and any(isinstance(c, dict) and c.get("type") == "tool_result"
+                                       for c in obsah):
+        return False
+    return True
+
+
+def _fronta_a_prace(path, od_ms):
+    """(zprávy z fronty, které Claude ještě neviděl; jestli byl uprostřed práce).
+
+    Frontu drží Claude Code jen v paměti: co člověk poslal, zatímco Claude
+    pracoval, restart smaže a v přepisu po tom zbyde jen `enqueue` bez
+    `dequeue`/`remove`. Počítá se jen od startu tabu — starší ztracené zprávy
+    už ukázalo čtení jako nedoručené a člověk je mezitím poslal znovu.
+    """
+    from . import cteni
+    if not path or not os.path.isfile(path):
+        return [], False
+    cekaji, po_vyjmuti = [], False
+    try:
+        with open(path, "rb") as fh:
+            for line in fh:
+                fronta = b"queue-operation" in line[:200]
+                if not fronta and (b'"user"' not in line or b"tool_use_id" in line):
+                    continue
+                try:
+                    entry = json.loads(line)
+                except ValueError:
+                    continue
+                if od_ms and cteni._ms(entry.get("timestamp")) < od_ms - 5000:
+                    continue
+                if not fronta:
+                    if _je_zadani(entry):
+                        # Zadání, které nepřišlo z fronty: fronta se mezitím
+                        # ztratila jinak (a čtení to ukázalo).
+                        if not po_vyjmuti:
+                            cekaji = []
+                        po_vyjmuti = False
+                    continue
+                # Ve frontě jsou i hlášky o úlohách a zprávy od jiných session —
+                # vyjímají se ve stejném pořadí, takže se drží všechno a od
+                # člověka se vybere až nakonec.
+                op, obsah = entry.get("operation"), entry.get("content")
+                if op == "enqueue":
+                    cekaji.append(obsah)
+                elif op == "remove":
+                    if obsah in cekaji:
+                        cekaji.remove(obsah)
+                elif op == "dequeue":
+                    if cekaji:
+                        cekaji.pop(0)
+                    po_vyjmuti = True
+                elif op == "popAll":
+                    cekaji = []
+    except OSError:
+        return [], False
+    od_cloveka = [z for z in cekaji if isinstance(z, str) and "<task-notification>" not in z
+                  and cteni._zprava_cloveka(z)]
+    return [cteni._text_cloveka(z) for z in od_cloveka], _uprostred_prace(path, od_ms)
+
+
+def _uprostred_prace(path, od_ms):
+    """Skončil přepis uprostřed tahu — nástroj bez výsledku, výsledek bez
+    odpovědi, zadání bez odpovědi? Pak restart Clauda přerušil v práci."""
+    from . import cteni
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, os.path.getsize(path) - _KONEC_PREPISU))
+            radky = fh.read().splitlines()
+    except OSError:
+        return False
+    for line in reversed(radky):
+        if b'"user"' not in line and b'"assistant"' not in line:
+            continue
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        druh = entry.get("type")
+        if druh not in ("user", "assistant") or entry.get("isSidechain") or entry.get("isMeta"):
+            continue
+        if od_ms and cteni._ms(entry.get("timestamp")) < od_ms - 5000:
+            return False
+        if druh == "assistant":
+            if entry.get("isApiErrorMessage"):
+                return False
+            zprava = entry.get("message") or {}
+            obsah = zprava.get("content") or []
+            return zprava.get("stop_reason") == "tool_use" or any(
+                isinstance(c, dict) and c.get("type") == "tool_use" for c in obsah)
+        if not _je_zadani(entry):
+            return True                     # výsledek nástroje bez odpovědi
+        # Zadání bez odpovědi. „[Request interrupted…“ (Esc) a podobné
+        # vynechá _text_cloveka — to zastavil člověk sám.
+        return bool(cteni._text_cloveka((entry.get("message") or {}).get("content")))
+    return False
+
+
+def _pokracuj(session, reason="restart"):
+    """Zpráva pro Clauda po obnovení tabu, nebo ''.
+
+    Restart (aktualizace, uspání prostoru, pád) Claudovi bere tři věci, o
+    kterých by sám nevěděl:
+      - práci uprostřed tahu — stál by a čekal, až mu někdo napíše,
+      - úlohy na pozadí (příkazy, hlídání, agenty) — jsou to děti procesu
+        Claude Code, čekal by na hlášky, které už nepřijdou,
+      - zprávy ve frontě — člověk je poslal, ale Claude je ještě neviděl.
+    Úmyslné zavření appky na počítači práci nenavazuje (člověk ji zastavil),
+    zprávy z fronty ale doručí — ty poslal, aby je Claude dostal.
+    """
     try:
         from . import cteni
-        ulohy = cteni.pozadi(core.transcript_for(session), int(session.started * 1000))
-    except Exception:
+        cesta = core.transcript_for(session)
+        od_ms = int(session.started * 1000)
+        ulohy = cteni.pozadi(cesta, od_ms)
+        zpravy, prerusen = _fronta_a_prace(cesta, od_ms)
+    except Exception as exc:
+        core.log_error("stav tabu pro obnovu", exc)
         return ""
-    if not ulohy:
+    if reason == "zavreni":
+        prerusen, ulohy = False, []
+    zpravy = [z for z in zpravy if z.strip()]
+    if not (ulohy or zpravy or prerusen):
         return ""
-    radky = []
-    for u in ulohy[:8]:
-        druh = {"Agent": "agent", "Monitor": "hlídání",
-                "ScheduleWakeup": "naplánované probuzení (ScheduleWakeup)"}.get(u.get("name"), "příkaz")
-        co = (u.get("detail") or u.get("title") or "").strip().replace("\n", " ")
-        radky.append(f"- {druh}: {co[:300]}")
-    return ("[hub] Hub se mezitím restartoval (aktualizace) a tyhle úlohy na pozadí se "
-            "tím zastavily — hlášky o jejich doběhnutí už nepřijdou:\n" + "\n".join(radky) +
-            "\n\nZkontroluj, co z toho je pořád potřeba, pusť to znovu a pokračuj tam, "
-            "kde jsi skončil. Uživateli to krátce oznam.")
+    kusy = ["[hub] Hub se mezitím restartoval (aktualizace nebo uspání prostoru)"
+            + (" a přerušil tě uprostřed práce." if prerusen or ulohy else ".")]
+    if ulohy:
+        radky = []
+        for u in ulohy[:8]:
+            druh = {"Agent": "agent", "Monitor": "hlídání",
+                    "ScheduleWakeup": "naplánované probuzení (ScheduleWakeup)"}.get(u.get("name"), "příkaz")
+            co = (u.get("detail") or u.get("title") or "").strip().replace("\n", " ")
+            radky.append(f"- {druh}: {co[:300]}")
+        kusy.append("Tyhle úlohy na pozadí se tím zastavily — hlášky o jejich doběhnutí už "
+                    "nepřijdou:\n" + "\n".join(radky) +
+                    "\nZkontroluj, co z toho je pořád potřeba, a pusť to znovu.")
+    if zpravy:
+        # Oddělovače `---` čte i hub/cteni.py: podle nich pozná, které bubliny
+        # z fronty tahle zpráva doručila.
+        kusy.append("Uživatel ti mezitím poslal " +
+                    ("zprávu, kterou" if len(zpravy) == 1 else "zprávy, které") +
+                    " restart smazal z fronty — ještě jsi " +
+                    ("ji" if len(zpravy) == 1 else "je") + " neviděl:\n" +
+                    "".join(f"---\n{z.strip()}\n" for z in zpravy) + "---")
+    kusy.append("Pokračuj tam, kde jsi skončil, a uživateli krátce oznam, že navazuješ."
+                if prerusen or ulohy else "Odpověz na to.")
+    return "\n\n".join(kusy)
 
 
 def snapshot(hub, reason="restart", quiet=False):
@@ -102,7 +236,7 @@ def snapshot(hub, reason="restart", quiet=False):
         if session.kind == "project" or session.kind.startswith("slash:"):
             if (agent or core.default_agent()) == "claude":
                 resume = _resume_for(hub, session)
-                prompt = _pokracuj(session)
+                prompt = _pokracuj(session, reason)
         tabs.append({
             "kind": session.kind,
             "path": session.path or "",

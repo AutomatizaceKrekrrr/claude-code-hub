@@ -1035,7 +1035,11 @@
     function send() {
       const files = atts.map(io.quote).join(' ');
       const text = files ? input.value.trim() : input.value;
-      const body = files ? (text ? files + ' ' + text : files) : text;
+      /* Cesty k přílohám až za text. Zpráva, která začíná lomítkem, je pro
+         Claude Code příkaz („/home/…png“) — příkazy si během práce nebere,
+         takže by čekala ve frontě až do konce celé úlohy (a restart prostoru
+         by ji mezitím smazal). Bez textu ji uvede slovo, ať lomítkem nezačíná. */
+      const body = files ? (text ? text + ' ' + files : 'Příloha: ' + files) : text;
       if (!body.trim()) return;
       autoPredOdeslanim(input.value);
       document.dispatchEvent(new CustomEvent('hub-odeslano', {detail: {tab: tab.id, text: input.value.trim()}}));
