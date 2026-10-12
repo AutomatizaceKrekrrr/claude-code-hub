@@ -1291,6 +1291,18 @@ button.vault-crumb:hover { background: var(--bg-card); color: var(--fg-bright); 
   margin: 0 0 1em; padding: 12px 14px; overflow-x: auto;
   background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
 }
+/* Kopírování bloku kódu v odpovědi Clauda (cteni.js, kopirovaniKodu). */
+.cteni-kod { position: relative; }
+.cteni-kod > .vault-code { padding-right: 44px; }
+.cteni-kod-kopie {
+  position: absolute; top: 7px; right: 7px; width: 28px; height: 28px;
+  display: grid; place-items: center; padding: 0; cursor: pointer;
+  color: var(--dim); background: var(--bg-card); border: 1px solid var(--border); border-radius: 6px;
+  transition: color .15s, border-color .15s;
+}
+.cteni-kod-kopie .ico { width: 15px; height: 15px; }
+.cteni-kod-kopie:hover, .cteni-kod-kopie:focus-visible { color: var(--fg-bright); border-color: var(--dim); }
+.cteni-kod-kopie.ok { color: var(--green); }
 .vault-md .vault-code code { padding: 0; border: none; background: none; font-size: 12.5px; line-height: 1.55; }
 .vault-md blockquote { margin: 0 0 1em; padding: 2px 14px; border-left: 3px solid var(--border); color: var(--dim); }
 .vault-callout {

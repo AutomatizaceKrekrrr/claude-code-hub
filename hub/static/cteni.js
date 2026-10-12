@@ -501,6 +501,31 @@
         .then(() => { if (notice) notice('Zkopírováno (' + text.length + ' znaků)'); })
         .catch((err) => { if (notice) notice('Kopírování se nepovedlo: ' + ((err && err.message) || err)); });
     }
+    /* Blok kódu v odpovědi → tlačítko „kopírovat“ v rohu. Blok se obalí,
+       aby tlačítko stálo na místě i při vodorovném posouvání dlouhých řádků. */
+    function kopirovaniKodu(koren) {
+      if (!copy) return;
+      for (const pre of koren.querySelectorAll('pre.vault-code')) {
+        if (pre.parentNode.classList.contains('cteni-kod')) continue;
+        const obal = el('div', 'cteni-kod');
+        const tl = el('button', 'cteni-kod-kopie');
+        tl.type = 'button';
+        tl.title = 'Kopírovat';
+        tl.setAttribute('aria-label', 'Kopírovat kód');
+        const ikona = (id) => { tl.innerHTML = '<svg class="ico"><use href="#' + id + '"/></svg>'; };
+        ikona('i-copy');
+        tl.onclick = (ev) => {
+          ev.stopPropagation();
+          const kod = pre.querySelector('code') || pre;
+          zkopiruj(kod.textContent.replace(/\n$/, ''));
+          ikona('i-check');
+          tl.classList.add('ok');
+          setTimeout(() => { ikona('i-copy'); tl.classList.remove('ok'); }, 1500);
+        };
+        pre.replaceWith(obal);
+        obal.append(pre, tl);
+      }
+    }
     /* Označený text uvnitř proudu → malá lišta „Kopírovat výběr“. Nativní
        označování prstem zůstává, lišta jen přidává tlačítko nad pole na psaní.
        Text se zachytí hned při označení — klepnutí na tlačítko by výběr mohlo
@@ -1142,7 +1167,7 @@
         if (volby) { volby.remove(); volby = null; }
         const box = el('div', 'cteni-say vault-md');
         const html = markdown(b.text);
-        if (html) { box.innerHTML = html; ozivHtml(box); }
+        if (html) { box.innerHTML = html; ozivHtml(box); kopirovaniKodu(box); }
         else box.textContent = b.text;
         mount.appendChild(box);
         const moznosti = odpovez ? rychleOdpovedi(b.text) : [];
