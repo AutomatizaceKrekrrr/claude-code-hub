@@ -109,9 +109,17 @@ class _WindowsPty:
         except ImportError as exc:  # pragma: no cover — depends on the machine
             raise PtyUnavailable(
                 "pywinpty chybí — nainstaluj: pip install pywinpty") from exc
-        self.proc = PtyProcess.spawn(
-            argv, cwd=cwd, env={str(k): str(v) for k, v in env.items()},
-            dimensions=(rows, cols))
+        try:
+            self.proc = PtyProcess.spawn(
+                argv, cwd=cwd, env={str(k): str(v) for k, v in env.items()},
+                dimensions=(rows, cols))
+        except BaseException as exc:
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
+            # pywinpty (Rust) při selhání ConPTY panikaří výjimkou, která není
+            # Exception — server by ji nechytil, spojení se stránkou by tiše
+            # skončilo a tab by čekal navždy. Takhle tab ukáže chybu.
+            raise PtyUnavailable(f"Terminál se nepodařilo otevřít (ConPTY): {exc}") from exc
         self._closed = False
         # pywinpty hands us str, so what we write has to be str too — and a
         # websocket frame can end mid-character. Decoding incrementally keeps
