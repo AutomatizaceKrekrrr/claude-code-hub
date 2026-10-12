@@ -7,6 +7,9 @@ name: Desktop appka
 on:
   workflow_dispatch:
   push:
+    # Jen větve: u tagů GitHub filtr paths nevyhodnocuje a běh (3 systémy,
+    # ~25 min, instalačky jako artefakty) by se pouštěl s každým vydáním.
+    branches: ['**']
     paths:
       - 'desktop/**'
       - 'claude-hub.py'
