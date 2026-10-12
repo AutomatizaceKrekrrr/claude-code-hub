@@ -12,12 +12,15 @@
  *
  * Starší hub přepínač nezná: pak běží s --no-browser a ukončí ho tahle appka.
  *
+ * Hub od 2.78 appku instaluje sám (hub/appka.py) a okno otevírá v ní:
+ * spustí ji s --hub-url=<adresa> a appka se jen připojí, nic nespouští.
+ *
  * Proměnné pro zkoušky: HUB_LAUNCHER (cesta ke claude-hub.py), HUB_PYTHON,
  * HUB_ARGS (např. --test), HUB_DESKTOP_TEST.
  */
 'use strict';
 
-const { app, BrowserWindow, Menu, shell, session, dialog, nativeTheme } = require('electron');
+const { app, BrowserWindow, Menu, shell, session, dialog, nativeTheme, ipcMain } = require('electron');
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const http = require('http');
@@ -32,6 +35,13 @@ const HUB_URL = /^http:\/\/127\.0\.0\.1:\d+(\/|$)/;
 
 const claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const readJson = (p) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (_) { return null; } };
+// Adresa hubu z příkazové řádky (hub/appka.py → --hub-url=…): hub už běží
+// a okno má jít rovnou k němu.
+const adresaZArgv = (argv) => {
+  const a = (argv || []).find((x) => String(x).startsWith('--hub-url='));
+  const u = a ? String(a).slice('--hub-url='.length) : '';
+  return HUB_URL.test(u) ? u : '';
+};
 
 let hubProc = null;        // hub, který jsme spustili my
 let hubSam = true;         // ukončí se hub sám (--vlastni-okno), nebo ho zavřeme my
@@ -225,7 +235,23 @@ function noveOkno(url) {
     ...opts, minWidth: 720, minHeight: 480, title: 'Claude Code Hub',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d0f12' : '#ffffff',
     ...(fs.existsSync(icon) ? { icon } : {}),
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
+    // Menu kreslí hub v liště (window.hubApp) — nativní lišta je schovaná a Alt
+    // ji ukáže. Starší hub, který menu nekreslí, ji dostane zpátky (níž).
+    autoHideMenuBar: !IS_MAC,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false,
+      preload: path.join(__dirname, 'preload.cjs') },
+  });
+  // Nová stránka (i Znovu načíst, přechod na novou instanci hubu) menu kreslí
+  // znovu. Nulovat se musí při potvrzení navigace, ne až po načtení — to už
+  // stránka menu dávno nahlásila a lišta by se po 4 s vrátila (dvě menu).
+  win.webContents.on('did-navigate', () => { win.__menuVListe = false; });
+  win.webContents.on('did-finish-load', () => {
+    setTimeout(() => {
+      if (!win.isDestroyed() && !win.__menuVListe && !IS_MAC) {
+        win.setAutoHideMenuBar(false);
+        win.setMenuBarVisibility(true);
+      }
+    }, 4000);
   });
   win.webContents.setWindowOpenHandler(({ url: u }) => { ven(u); return { action: 'deny' }; });
   win.webContents.on('will-navigate', (e, u) => { if (!duveryhodne(u)) { e.preventDefault(); ven(u); } });
@@ -257,8 +283,9 @@ function noveOkno(url) {
   return win;
 }
 
-async function otevriOkno() {
+async function otevriOkno(primo = '') {
   try {
+    if (primo && (await dotaz(primo))) return noveOkno((hubUrl = primo));
     return noveOkno(await zajistiHub());
   } catch (e) {
     if (!/není nainstalovaný|chybí Python|bez značky/.test(String(e.message))) {
@@ -322,18 +349,64 @@ function sestavMenu() {
     ] },
     edit,
     { label: 'Zobrazení', submenu: [
-      { role: 'reload', label: 'Znovu načíst' }, { role: 'forceReload' },
+      { role: 'reload', label: 'Znovu načíst' }, { role: 'forceReload', label: 'Načíst znovu bez mezipaměti' },
       { role: 'toggleDevTools', label: 'Nástroje pro vývojáře' }, { type: 'separator' },
       { role: 'resetZoom', label: 'Skutečná velikost' }, { role: 'zoomIn', label: 'Přiblížit' },
       { role: 'zoomOut', label: 'Oddálit' }, { type: 'separator' },
       { role: 'togglefullscreen', label: 'Celá obrazovka' },
     ] },
-    { label: 'Okno', role: 'windowMenu' },
+    // Na Macu systémové menu Okno; jinde vlastní položky, ať jde nakreslit v liště hubu.
+    IS_MAC ? { label: 'Okno', role: 'windowMenu' } : { label: 'Okno', submenu: [
+      { role: 'minimize', label: 'Minimalizovat' },
+      { label: 'Maximalizovat', click: (_i, win) => { if (win) { if (win.isMaximized()) win.unmaximize(); else win.maximize(); } } },
+    ] },
     { label: 'Nápověda', submenu: [
       { label: 'Claude Code Hub na GitHubu', click: () => ven('https://github.com/jurapascal/claude-code-hub') },
     ] },
   ];
+  // Každá položka dostane id — podle něj ji spouští menu nakreslené v hubu.
+  let n = 0;
+  const ocisluj = (items) => items.forEach((i) => { if (!i.id) i.id = `m${++n}`; if (Array.isArray(i.submenu)) ocisluj(i.submenu); });
+  ocisluj(template);
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/* Menu pro stránku. Nativní menu Electronu kreslí na Linuxu a Windows
+ * Chromium a jeho rozbalené položky jsou velké jako pro prst — zvenku se to
+ * nastavit nedá. Hub proto menu nakreslí sám v liště (hub.js, appMenu), stejně
+ * malé jako ostatní tlačítka, a nativní lišta se schová (Alt ji ukáže, zkratky
+ * fungují dál). Na Macu je menu nahoře v systému, tam se nic nekreslí. */
+function zkratka(item) {
+  let a = item.accelerator || (typeof item.getDefaultRoleAccelerator === 'function' && item.getDefaultRoleAccelerator()) || '';
+  a = String(a || '').replace(/CommandOrControl|CmdOrCtrl|Control/g, 'Ctrl').replace(/\bPlus\b/, '+');
+  return a;
+}
+function menuProStranku() {
+  const m = Menu.getApplicationMenu();
+  if (IS_MAC || !m) return [];
+  return m.items.filter((t) => t.submenu && t.visible !== false).map((t) => ({
+    label: t.label.replace(/&/g, ''),
+    polozky: t.submenu.items.filter((i) => i.visible !== false).map((i) => (i.type === 'separator'
+      ? { oddelovac: true }
+      : { id: i.id, label: i.label, zkratka: zkratka(i), povoleno: i.enabled !== false })),
+  }));
+}
+function mostMenu() {
+  const zDuveryhodne = (e) => duveryhodne((e.senderFrame && e.senderFrame.url) || e.sender.getURL());
+  ipcMain.handle('appka:menu', (e) => (zDuveryhodne(e) ? menuProStranku() : []));
+  ipcMain.on('appka:akce', (e, id) => {
+    if (!zDuveryhodne(e)) return;
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const item = Menu.getApplicationMenu() && Menu.getApplicationMenu().getMenuItemById(String(id));
+    if (win && item && item.enabled !== false) item.click(undefined, win, e.sender);
+  });
+  ipcMain.on('appka:menu-v-liste', (e, ano) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win || IS_MAC) return;
+    win.__menuVListe = !!ano;
+    win.setAutoHideMenuBar(!!ano);
+    win.setMenuBarVisibility(!ano);
+  });
 }
 
 /* ── start ─────────────────────────────────────────────────────────────── */
@@ -347,15 +420,31 @@ function povoleni() {
   ses.setPermissionCheckHandler((wc, permission, origin) => ok(permission, origin));
 }
 
-// AppImage na novějších Linuxech (Ubuntu 24.04+, AppArmor) neumí Chromium
-// sandbox spustit a appka by spadla hned na startu. Okno ukazuje jen lokální
-// hub, cizí stránky jdou ven do prohlížeče (will-navigate níž).
-if (process.platform === 'linux' && process.env.APPIMAGE) app.commandLine.appendSwitch('no-sandbox');
+// Na novějších Linuxech (Ubuntu 24.04+, AppArmor) neumí Chromium sandbox
+// spustit — jmenné prostory má systém zakázané a pomocník chrome-sandbox
+// nemá setuid (AppImage ani rozbalená složka z hubu/appka.py ho mít nemůže).
+// Appka by spadla hned na startu. Okno ukazuje jen lokální hub, cizí stránky
+// jdou ven do prohlížeče (will-navigate níž).
+function bezSandboxu() {
+  if (process.platform !== 'linux') return false;
+  if (process.env.APPIMAGE) return true;
+  const cti = (p) => { try { return fs.readFileSync(p, 'utf8').trim(); } catch (_) { return ''; } };
+  const bezJmennychProstoru = cti('/proc/sys/kernel/apparmor_restrict_unprivileged_userns') === '1'
+    || cti('/proc/sys/kernel/unprivileged_userns_clone') === '0';
+  let setuid = false;
+  try {
+    const st = fs.statSync(path.join(path.dirname(process.execPath), 'chrome-sandbox'));
+    setuid = st.uid === 0 && (st.mode & 0o4000) !== 0;
+  } catch (_) { /* není */ }
+  return bezJmennychProstoru && !setuid;
+}
+if (bezSandboxu()) app.commandLine.appendSwitch('no-sandbox');
 
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
-  app.on('second-instance', () => { otevriOkno(); });
+  // Druhé spuštění (Nové okno z hubu, zástupce) = další okno téže appky.
+  app.on('second-instance', (_e, argv) => { otevriOkno(adresaZArgv(argv)); });
   app.setAppUserModelId('com.github.jurapascal.claude-code-hub.desktop');
 
   app.whenReady().then(async () => {
@@ -366,6 +455,7 @@ if (!app.requestSingleInstanceLock()) {
     }
     povoleni();
     sestavMenu();
+    mostMenu();
     hlidej();
     if (TEST) {
       global.hubDesktop = {
@@ -378,7 +468,7 @@ if (!app.requestSingleInstanceLock()) {
         hlasky: () => hlasky.slice(),
       };
     }
-    await otevriOkno();
+    await otevriOkno(adresaZArgv(process.argv));
   });
 
   app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) otevriOkno(); });

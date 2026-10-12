@@ -205,6 +205,84 @@ def wait_for_page(proc=None, grace=10, startup=60):
             return
 
 
+def otevri_okno(target, prefer, appka_ok, vlastni_server=True):
+    """window.open_window s pojistkou: okno samostatné appky (hub/appka.py),
+    které nenaběhne, se nahradí oknem v prohlížeči. Bez téhle pojistky by po
+    rozbité appce nezbylo nic, kam se dívat."""
+    host, proc, blocking = window.open_window(target, prefer, appka_ok)
+    if host != "appka":
+        return host, proc, blocking
+    from hub import appka
+    if vlastni_server:
+        # Server je náš → spolehlivý signál je stránka, která se připojí.
+        # Appka, která hned skončí s chybou, nenaběhne — na to se nečeká.
+        # Nula je v pořádku: druhé spuštění běžící appky okno předá a skončí.
+        konec = time.time() + 30
+        while time.time() < konec and server.HUB.clients == 0 and proc.poll() in (None, 0):
+            time.sleep(0.25)
+        ok = server.HUB.clients > 0
+    else:
+        # Okno k hubu, který běží v jiném procesu — vidíme jen appku samu.
+        # Druhé spuštění běžící appky okno předá a hned skončí s nulou.
+        time.sleep(4)
+        ok = proc.poll() in (None, 0)
+    if ok:
+        return host, proc, blocking
+    core.log("appka: okno nenaběhlo — otevírám ho v prohlížeči", "warn")
+    appka.SELHALA = True
+    try:
+        proc.kill()
+    except Exception:
+        pass
+    return window.open_window(target, prefer, appka_ok=False)
+
+
+def _appka_na_pozadi(url):
+    """Stáhne nebo aktualizuje samostatnou appku z posledního vydání. Poprvé
+    stažená hned převezme okno v prohlížeči — na téže instanci, takže taby
+    i rozdělaná práce Clauda běží dál a nic se nerestartuje."""
+    from hub import appka
+    # Vydání přikládá appku až po sestavení (Instalačky, ~25 min po značce) —
+    # kdo se aktualizoval dřív, dostane ji při dalším pokusu, ne až po restartu.
+    stav = ""
+    for _ in range(48):
+        try:
+            stav = appka.zajisti()
+        except Exception as exc:
+            core.log(f"appka: {exc}", "warn")
+        if stav or appka.spustitelny() or not appka.zapnuta():
+            break
+        time.sleep(1800)
+    if stav != "nova" or core.VLASTNI_OKNO or not appka.zapnuta():
+        return
+    hub = server.HUB
+    # Stažení bývá rychlejší než start okna v prohlížeči — počkat, až naběhne.
+    konec = time.time() + 90
+    while time.time() < konec and hub.clients == 0:
+        time.sleep(0.5)
+    if hub.clients == 0:
+        return              # okno otevřené není — příště se otevře rovnou appka
+    pred = hub.clients
+    try:
+        proc = appka.spust(url)
+    except OSError as exc:
+        core.log(f"appka: nejde spustit ({exc})", "warn")
+        return
+    konec = time.time() + 40
+    while time.time() < konec and hub.clients <= pred:
+        time.sleep(0.5)
+    if hub.clients > pred:
+        core.log("appka: převzala okno, okna v prohlížeči se zavřou")
+        hub.broadcast({"t": "appka-prechod"})
+    else:
+        core.log("appka: okno nenaběhlo, zůstává prohlížeč", "warn")
+        appka.SELHALA = True
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 def server_start_url(local_url):
     """Kam otevřít okno v serverovém režimu. None = zůstat na počítači.
 
@@ -239,9 +317,13 @@ def main():
         return doctor()
 
     prefer = core.CONFIG.get("window", "")
+    # Okno vybrané na příkazové řádce je výslovné přání — samostatná appka
+    # (hub/appka.py) pak ustoupí. Volba "window" v nastavení ne: ta je starší.
+    appka_ok = True
     for arg in args:
         if arg.startswith("--window="):
             prefer = arg.split("=", 1)[1]
+            appka_ok = False
 
     # Prostor na serveru: `--server[=adresa]` ho zapne, `--local` vypne.
     # Samo přepnutí nic neověřuje — bez přihlášení se otevře hub na počítači
@@ -262,7 +344,7 @@ def main():
         bezi = pozadi.bezici_url()
         if bezi:
             core.log("běží na pozadí — otevírám okno k ní")
-            host, proc, blocking = window.open_window(bezi, prefer)
+            host, proc, blocking = otevri_okno(bezi, prefer, appka_ok, vlastni_server=False)
             if blocking:
                 blocking()
             return 0
@@ -279,6 +361,9 @@ def main():
             core.log(f"vzhled: spouštěč nejde srovnat ({exc})", "warn")
         pozadi.ikonka_url(url)          # ikonka v liště jen u appky s oknem
     pozadi.sync()
+    if "--no-browser" not in args and not core.TEST_MODE:
+        # Samostatná appka: stáhnout/aktualizovat na pozadí, okno na to nečeká.
+        threading.Thread(target=_appka_na_pozadi, args=(url,), daemon=True).start()
     # Celý doctor() tu nevolat — ptá se agentů (CLI) a okno by na to čekalo.
     core.log(f"start: port {httpd.server_address[1]}, platforma {sys.platform}")
     if core.CONFIG.get("remote_enabled"):
@@ -313,7 +398,7 @@ def main():
                 core.log("okno: převzato (přepnuté stávající)")
                 wait_for_page(None)
                 return 0
-        host, proc, blocking = window.open_window(target, prefer)
+        host, proc, blocking = otevri_okno(target, prefer, appka_ok)
         core.log(f"okno: {host}")
         if blocking:
             blocking()          # in-process loop owns the window's lifetime

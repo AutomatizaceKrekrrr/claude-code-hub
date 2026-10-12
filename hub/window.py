@@ -329,7 +329,7 @@ def zavri_okno(base):
     return killed
 
 
-def open_window(url, prefer=""):
+def open_window(url, prefer="", appka_ok=True):
     """Open the hub UI.
 
     Returns (host_name, proc, blocking_wait). Exactly one of the last two is set:
@@ -337,6 +337,16 @@ def open_window(url, prefer=""):
     (WebKitGTK), otherwise `proc` is the browser we spawned — which may or may not
     outlive the window, so the caller must watch the page instead.
     """
+    # Samostatná appka (hub/appka.py), když je nainstalovaná — má přednost před
+    # Chromem i před starší volbou "window". Jen pro hub na tomhle počítači:
+    # prostor na serveru jde dál do prohlížeče.
+    if appka_ok and url.startswith("http://127.0.0.1:"):
+        from . import appka
+        if appka.zapnuta() and appka.spustitelny():
+            try:
+                return "appka", appka.spust(url), None
+            except OSError as exc:
+                core.log(f"appka: nejde spustit ({exc})", "warn")
     order = ["chromium", "webkit", "browser"]
     if prefer in order:
         order.remove(prefer)

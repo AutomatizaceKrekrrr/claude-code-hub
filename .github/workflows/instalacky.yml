@@ -97,9 +97,54 @@ jobs:
           path: dist/*.dmg
           if-no-files-found: error
 
+  # Samostatná appka (desktop/, Electron) pod pevnými jmény — hub si ji po
+  # aktualizaci stáhne sám z posledního vydání (hub/appka.py) a otevírá okno
+  # v ní místo Chromu. okno.json nese její verzi, podle ní se stahuje znovu.
+  okno:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Sestavit
+        run: |
+          npm ci
+          npm run ikony
+          mkdir -p ../dist
+          case "$RUNNER_OS" in
+            Linux)
+              npx electron-builder --linux tar.gz --x64 --publish never
+              cp dist/*-linux-x64.tar.gz ../dist/Claude-Code-Hub-Okno-linux-x64.tar.gz
+              node -p "JSON.stringify({version: require('./package.json').version})" > ../dist/okno.json ;;
+            Windows)
+              npx electron-builder --win zip --x64 --publish never
+              cp dist/*-win-x64.zip ../dist/Claude-Code-Hub-Okno-win-x64.zip ;;
+            macOS)
+              npx electron-builder --mac zip --arm64 --x64 --publish never
+              cp dist/*-mac-arm64.zip ../dist/Claude-Code-Hub-Okno-mac-arm64.zip
+              cp dist/*-mac-x64.zip ../dist/Claude-Code-Hub-Okno-mac-x64.zip ;;
+          esac
+          ls -la ../dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okno-${{ runner.os }}
+          path: dist/*
+          if-no-files-found: error
+
   vydani:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, mac]
+    needs: [linux, windows, mac, okno]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

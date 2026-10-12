@@ -67,6 +67,40 @@ body { display: flex; flex-direction: column; }
   border-bottom: 1px solid var(--border);
 }
 .topbar-title { display: flex; align-items: center; gap: 8px; color: var(--fg-bright); }
+/* Menu samostatné appky (hub.js, appMenu): proužek nad lištou hubu, na místě
+   nativní lišty Electronu. Tlačítka i rozbalené položky jsou stejně vysoké
+   (24 px), ne prstové jako v nativním menu. */
+.appmenu {
+  /* Nad všemi dialogy a překryvy hubu (průvodce, úvodní obrazovka) — jako
+     nativní menu mimo stránku jde použít vždycky. */
+  position: relative; z-index: 10050;
+  display: flex; align-items: center; gap: 1px; flex: none;
+  height: 28px; padding: 0 6px;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}
+.appmenu[hidden] { display: none; }
+.appmenu-btn {
+  height: 24px; padding: 0 8px;
+  background: none; border: none; border-radius: 5px;
+  color: var(--fg); font: inherit; font-size: 12.5px; cursor: default;
+}
+.appmenu-btn:hover, .appmenu-btn.on { background: var(--bg-card); color: var(--fg-bright); }
+.appmenu-drop {
+  position: fixed; z-index: 10060; min-width: 200px; padding: 3px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--section); border-radius: 7px;
+  box-shadow: 0 8px 24px rgba(0,0,0,.28);
+}
+.appmenu-drop hr { border: none; border-top: 1px solid var(--border); margin: 3px 6px; }
+.appmenu-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  width: 100%; height: 24px; padding: 0 8px;
+  background: none; border: none; border-radius: 5px;
+  color: var(--fg-bright); font: inherit; font-size: 12.5px; text-align: left; cursor: default;
+}
+.appmenu-item:hover:not(:disabled) { background: var(--card-hover); }
+.appmenu-item:disabled { opacity: .45; }
+.appmenu-item kbd { font: inherit; font-size: 11.5px; color: var(--dim); }
 .brand-ico { color: var(--accent); font-size: 19px; }
 /* Odznak prostředí je zároveň přepínač: jedno kliknutí sem přehodí počítač
    a prostor na serveru. Dřív se na to muselo přes nastavení. */

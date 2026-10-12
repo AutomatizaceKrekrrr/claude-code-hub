@@ -1,7 +1,7 @@
 /* Zkouška appky na tomhle systému:
  *   1. naběhne hub, otevře se okno; Nové okno = druhé okno téhož hubu, sdílené
  *      taby; odkazy jdou ven; zavření oken ukončí i hub,
- *   2. hub už běží → appka se jen připojí,
+ *   2. hub už běží → appka se jen připojí; 2b. hub appku pustí s --hub-url,
  *   3. starší hub bez --vlastni-okno → appka ho spustí s --no-browser a sama zavře,
  *   4. aktualizace hubu za běhu → okna přejdou na novou instanci (i když
  *      nová naběhne pomalu — pak je přepne hlídač appky),
@@ -42,12 +42,12 @@ const nacteno = (p) => p.waitForFunction(() => typeof openTab === 'function' && 
   && !!STATE && typeof online === 'function' && online(), null, { timeout: 90000 });
 const port = (u) => (u.match(/:(\d+)\//) || [])[1];
 
-async function spust(claude, extraEnv = {}) {
+async function spust(claude, extraEnv = {}, extraArgs = []) {
   const ud = tmp('hub-desktop-ud-');
   const app = await electron.launch({
     ...(process.env.HUB_DESKTOP_EXE ? { executablePath: process.env.HUB_DESKTOP_EXE } : {}),
     args: [...(process.env.HUB_DESKTOP_EXE ? [] : [path.join(here, '..', 'main.js')]), `--user-data-dir=${ud}`,
-      ...(process.env.CI ? ['--no-sandbox'] : [])],
+      ...(process.env.CI ? ['--no-sandbox'] : []), ...extraArgs],
     env: { ...process.env, CLAUDE_CONFIG_DIR: claude, HUB_LAUNCHER: path.join(root, 'claude-hub.py'),
       HUB_PYTHON: python, HUB_DESKTOP_TEST: '1', ...extraEnv },
   });
@@ -114,6 +114,12 @@ const prace = async (okno) => {
     e.preventDefault(); e.returnValue = '';
   }));
 };
+// Menu v proužku nahoře (hub.js, appMenu) — na Macu je menu v systému.
+const noveOknoZMenu = async (app, okno) => {
+  if (process.platform === 'darwin') return klikniMenu(app, 'Nové okno');
+  await okno.click('#appmenu .appmenu-btn >> text=Soubor');
+  await okno.click('.appmenu-drop .appmenu-item >> text=Nové okno');
+};
 const klikniMenu = (app, label) => app.evaluate(({ Menu }, label) => {
   const find = (items) => { for (const i of items) { if (i.label === label) return i; if (i.submenu) { const x = find(i.submenu.items); if (x) return x; } } };
   find(Menu.getApplicationMenu().items).click();
@@ -150,6 +156,23 @@ const klikniMenu = (app, label) => app.evaluate(({ Menu }, label) => {
     ok(`Zavřít okno na ${mac ? 'Cmd+W' : 'Ctrl+Shift+W (Ctrl+W patří terminálu)'}`, menu.includes(`Zavřít okno|${mac ? 'Cmd+W' : 'Ctrl+Shift+W'}`));
     ok('menu má Úpravy (kopírovat/vložit)', menu.some((m) => m.startsWith('Kopírovat')) && menu.some((m) => m.startsWith('Vložit')));
     ok('v menu není nic z Chromu (History, Bookmarks)', !menu.some((m) => /^(History|Bookmarks|Profiles)/.test(m)));
+    if (!mac) {
+      // Nativní menu má na Linuxu a Windows rozbalené položky velké jako pro
+      // prst — hub ho kreslí sám jako proužek nahoře a nativní lišta se schová.
+      await okno1.waitForFunction(() => !document.getElementById('appmenu').hidden, null, { timeout: 15000 });
+      await pauza(4500);                       // pojistka pro starší hub čeká 4 s
+      ok('menu je proužek nahoře v hubu, nativní lišta schovaná',
+        !(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isMenuBarVisible()))
+        && (await okno1.evaluate(() => document.getElementById('appmenu').getBoundingClientRect().top)) === 0);
+      await okno1.click('#appmenu .appmenu-btn >> text=Soubor');
+      const vysky = await okno1.evaluate(() => ({
+        btn: document.querySelector('#appmenu .appmenu-btn').getBoundingClientRect().height,
+        pol: [...document.querySelectorAll('.appmenu-drop .appmenu-item')].map((b) => b.getBoundingClientRect().height),
+      }));
+      ok('rozbalené položky stejně vysoké jako tlačítko Soubor', vysky.pol.length > 0
+        && vysky.pol.every((h) => Math.abs(h - vysky.btn) < 0.5), `${vysky.btn} px / ${vysky.pol.join(', ')} px`);
+      await okno1.keyboard.press('Escape');
+    }
 
     // Odkazy ještě bez tabu: běžící tab hub drží beforeunload a přechod na cizí
     // stránku by se ptal (to zkouší scénář 1b), Playwright by se o dialog přetahoval.
@@ -281,6 +304,37 @@ if (!process.env.HUB_DESKTOP_EXE) {
   }
 }
 
+/* ── 2b. okno od hubu (--hub-url, hub/appka.py) ─────────────────────────── */
+{
+  const claude = tmpClaude();
+  const log = path.join(claude, 'vystup.log');
+  const hub = spawn(python, [path.join(root, 'claude-hub.py'), '--no-browser', '--test'],
+    { env: { ...process.env, CLAUDE_CONFIG_DIR: claude }, stdio: ['ignore', fs.openSync(log, 'w'), 'ignore'], windowsHide: true });
+  let app = null;
+  try {
+    console.log('\n── 2b. okno od hubu (--hub-url) ──');
+    let url = '';
+    for (let i = 0; i < 300 && !url; i++) {
+      await pauza(200);
+      const m = fs.readFileSync(log, 'utf8').match(/^http:\/\/127\.0\.0\.1:\d+\/\S*/m);
+      if (m) url = m[0];
+    }
+    // Zkušební hub značku hub-bezi.json nepíše — appka musí jít jen podle adresy.
+    app = await spust(claude, {}, [`--hub-url=${url}`]);
+    const w = await app.firstWindow({ timeout: 90000 });
+    await nacteno(w);
+    ok('appka s --hub-url jde rovnou na hub, který ji spustil',
+      port(w.url()) === port(url) && (await app.evaluate(() => global.hubDesktop.hubPid())) === 0);
+    await w.close().catch(() => {});
+  } catch (e) {
+    ok('scénář 2b doběhl bez výjimky', false, String(e.message || e).split('\n')[0]);
+    vypisLog(claude);
+  } finally {
+    try { process.kill(hub.pid); } catch (_) { /* pryč */ }
+    await konec(app, claude);
+  }
+}
+
 /* ── 3. starší hub bez --vlastni-okno ──────────────────────────────────── */
 {
   const claude = tmpClaude();
@@ -332,7 +386,10 @@ if (!process.env.HUB_DESKTOP_EXE) {
     ok('stará instance skončila, appka běží dál', !zije(staryPid) && app.windows().length === 1, `${s} s`);
     ok('přechod na novou instanci se při práci neptal „Opravdu odejít?"',
       !(await app.evaluate(() => global.hubDesktop.hlasky())).some((h) => /pracuje/.test(h)));
-    await klikniMenu(app, 'Nové okno');
+    if (process.platform !== 'darwin') {
+      await okno1.waitForFunction(() => !document.getElementById('appmenu').hidden, null, { timeout: 15000 });
+    }
+    await noveOknoZMenu(app, okno1);
     for (let i = 0; i < 40 && app.windows().length < 2; i++) await pauza(250);
     const okno2 = app.windows().find((w) => w !== okno1);
     if (okno2) await nacteno(okno2);

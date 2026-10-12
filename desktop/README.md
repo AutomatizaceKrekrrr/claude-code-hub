@@ -5,8 +5,32 @@ místo „Chrome", vlastní menu a **Cmd/Ctrl+N otevře další okno hubu** (ne 
 Chrome). Postavené na [Electronu](https://www.electronjs.org/) — stejné jádro
 (Chromium), na kterém hub běží dnes, a stejné UI. Nic se nepřepisuje.
 
+## Jak se k lidem dostane
+
+Sama, aktualizací hubu — nic se nestahuje ručně. Instalačky přikládají appku
+ke každému vydání (`.github/workflows/instalacky.yml`, job `okno`) pod pevnými
+jmény (`Claude-Code-Hub-Okno-<systém>-<procesor>`, k tomu `okno.json` s verzí).
+Hub od 2.78 si ji po startu stáhne do `~/.claude/appka/v<verze>/`
+(`hub/appka.py`) a okno pak otevírá v ní; poprvé stažená hned převezme okno
+v Chromu — na téže instanci, taby i rozdělaná práce Clauda běží dál.
+
+- Když appka nenaběhne do 30 s (nebo hned spadne), hub otevře okno v Chromu
+  jako dřív a v tom běhu ji už nezkouší.
+- Kdo ji nechce: `"appka": false` v `~/.claude/hub-config.json`
+  (nebo `--window=…` na příkazové řádce).
+- Na serveru (prostor brány), bez displeje a na procesorech, pro které se
+  nestaví (Linux ARM), se nestahuje vůbec.
+- Nová verze appky = vyšší `version` v `package.json`; hub ji při dalším
+  startu stáhne vedle a přepne na ni (běžící appka jede ze staré složky).
+
 ## Jak to funguje
 
+- **Menu** kreslí hub jako proužek nahoře (`hub.js`, `appMenu`; přes
+  `preload.cjs`) a nativní lišta je schovaná (Alt ji ukáže, zkratky platí
+  dál). Nativní menu Electronu má na Linuxu a Windows rozbalené položky
+  velké jako pro prst a zvenku se to nastavit nedá. Na Macu je menu v systému.
+- **Spuštěná hubem** (`--hub-url=<adresa>`) se appka jen připojí k hubu, který
+  ji pustil, a nic sama nespouští.
 - Appka najde **nainstalovaný hub** (`~/.claude/claude-hub.py`, Python z
   `~/.claude/runtime/python`, jinak systémový) a spustí ho s `--vlastni-okno`:
   hub jen vypíše adresu a žije, dokud je otevřená aspoň jedna stránka — pak se
@@ -29,7 +53,7 @@ Chrome). Postavené na [Electronu](https://www.electronjs.org/) — stejné jád
 cd desktop
 npm install
 npm start          # appka nad nainstalovaným hubem
-npm test           # zkouška: 4 scénáře se skutečným hubem z repa
+npm test           # zkouška: scénáře se skutečným hubem z repa
 ```
 
 Zkouška (`test/smoke.mjs`) používá hub z repa a dočasnou konfiguraci
@@ -54,8 +78,8 @@ Přesto spustit").
 
 ## Co zatím není
 
-- Spojení s instalačkami v `packaging/` (aby `.dmg`/Setup.exe rovnou nesly tuhle
-  appku místo okna Chromu) — rozhodnutí pro správce repa.
-- Podpis certifikátem (Apple Developer, Windows code signing).
-- Samoaktualizace appky — hub uvnitř se aktualizuje sám jako dřív, ale novou
-  verzi samotné appky (`desktop/`) je potřeba stáhnout znovu.
+- Podpis certifikátem (Apple Developer, Windows code signing). Appka stažená
+  hubem varování nedostane (nemá značku stažení z internetu); samostatně
+  stažený `.dmg`/Setup.exe ano.
+- Instalačky v `packaging/` nesou dál okno Chromu — appku si hub stáhne sám
+  při prvním startu.

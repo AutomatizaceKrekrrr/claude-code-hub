@@ -13,6 +13,8 @@ on:
     paths:
       - 'desktop/**'
       - 'claude-hub.py'
+      - 'hub/appka.py'
+      - 'hub/window.py'
       - '.github/workflows/desktop.yml'
 
 jobs:
@@ -65,13 +67,27 @@ jobs:
             Linux)   npx electron-builder --linux --x64 --publish never ;;
           esac
 
-      - name: Zkouška — zabalená appka
+      # Zabalenou appku nainstaluje hub sám (hub/appka.py) — stejně jako u lidí
+      # po aktualizaci, jen z místní složky místo vydání na GitHubu.
+      - name: Hub appku nainstaluje (hub/appka.py)
+        id: appka
         run: |
+          zdroj="$RUNNER_TEMP/zdroj"; mkdir -p "$zdroj" "$RUNNER_TEMP/claude"
           case "$RUNNER_OS" in
-            macOS)   export HUB_DESKTOP_EXE="$PWD/dist/mac-arm64/Claude Code Hub.app/Contents/MacOS/Claude Code Hub" ;;
-            Windows) export HUB_DESKTOP_EXE="$PWD/dist/win-unpacked/Claude Code Hub.exe" ;;
-            Linux)   export HUB_DESKTOP_EXE="$PWD/dist/linux-unpacked/claude-code-hub" ;;
+            Linux)   cp dist/*-linux-x64.tar.gz "$zdroj/Claude-Code-Hub-Okno-linux-x64.tar.gz" ;;
+            Windows) cp dist/*-win-x64.zip "$zdroj/Claude-Code-Hub-Okno-win-x64.zip" ;;
+            macOS)   cp dist/*-mac-arm64.zip "$zdroj/Claude-Code-Hub-Okno-mac-arm64.zip" ;;
           esac
+          node -p "JSON.stringify({version: require('./package.json').version})" > "$zdroj/okno.json"
+          cd ..
+          CLAUDE_CONFIG_DIR="$RUNNER_TEMP/claude" HUB_APPKA_ZDROJ="$zdroj" python -c \
+            "from hub import appka; appka.nainstaluj(appka.nejnovejsi()); e = appka.spustitelny(); assert e, 'appka chybí'; print('exe=' + e)" \
+            | tee -a "$GITHUB_OUTPUT"
+
+      - name: Zkouška — zabalená appka (nainstalovaná hubem)
+        env:
+          HUB_DESKTOP_EXE: ${{ steps.appka.outputs.exe }}
+        run: |
           if [ "$RUNNER_OS" = "Linux" ]; then xvfb-run -a npm test; else npm test; fi
 
       # Intel Mac: zabalená x64 appka přes Rosettu na Apple Silicon stroji.
@@ -89,4 +105,5 @@ jobs:
             desktop/dist/*.zip
             desktop/dist/*.exe
             desktop/dist/*.AppImage
+            desktop/dist/*.tar.gz
           if-no-files-found: error

@@ -3742,6 +3742,16 @@ function handle(msg) {
     return;
   }
   if (msg.t === 'okno-zavri') { setTimeout(() => { try { window.close(); } catch (_) { /* nic */ } }, 1200); return; }
+  /* Hub si stáhl samostatnou appku a otevřel v ní okno na téže instanci
+     (hub/appka.py) — tohle okno v prohlížeči už není potřeba. Okno appky
+     (window.hubApp) a telefon přes Tailscale zůstávají. */
+  if (msg.t === 'appka-prechod') {
+    if (window.hubApp || location.hostname !== '127.0.0.1') return;
+    window.HUB_LEAVING = true;
+    toast('Hub se přesunul do samostatné appky — tohle okno se zavře.');
+    setTimeout(() => { try { window.close(); } catch (_) { /* nic */ } }, 1500);
+    return;
+  }
   if (msg.t && msg.t.startsWith('br-')) { if (window.HubProhlizec) HubProhlizec.naZpravu(msg); return; }
   if (msg.t === 'out') {
     const tab = TABS.find(t => t.id === msg.id);
@@ -4083,7 +4093,76 @@ window.addEventListener('unhandledrejection', (ev) => {
   reportToLog('neodchycené odmítnutí: ' + (ev.reason && ev.reason.message || ev.reason));
 });
 
+/* ── Menu samostatné appky (desktop/, Electron) ────────────────────────────
+   Nativní menu Electronu kreslí na Linuxu a Windows Chromium a rozbalené
+   položky má velké jako pro prst — zvenku se to nastavit nedá. Appka proto
+   pošle šablonu svého menu (preload → window.hubApp) a hub ho nakreslí jako
+   proužek nahoře, na místě nativní lišty, kterou appka schová (Alt ji ukáže,
+   zkratky fungují dál). Rozbalené položky jsou stejně vysoké jako tlačítka.
+   Na Macu je menu v systému, šablona je prázdná.
+   Tlačítka si neberou fokus — Kopírovat a Vložit pak míří tam, kde se psalo. */
+async function appMenu() {
+  const api = window.hubApp;
+  const nav = $('appmenu');
+  if (!api || typeof api.menu !== 'function' || !nav) return;
+  let menus = [];
+  try { menus = await api.menu(); } catch (_) { return; }
+  if (!Array.isArray(menus) || !menus.length) return;
+  let open = null;                      // {btn, drop}
+  const close = () => {
+    if (!open) return;
+    open.btn.classList.remove('on');
+    open.drop.remove();
+    open = null;
+  };
+  const show = (btn, menu) => {
+    close();
+    const drop = document.createElement('div');
+    drop.className = 'appmenu-drop';
+    for (const p of menu.polozky || []) {
+      if (p.oddelovac) { drop.appendChild(document.createElement('hr')); continue; }
+      const it = document.createElement('button');
+      it.type = 'button';
+      it.className = 'appmenu-item';
+      it.disabled = p.povoleno === false;
+      it.innerHTML = '<span></span><kbd></kbd>';
+      it.firstChild.textContent = p.label;
+      it.lastChild.textContent = p.zkratka || '';
+      it.onmousedown = (ev) => ev.preventDefault();
+      it.onclick = () => { close(); api.akce(p.id); };
+      drop.appendChild(it);
+    }
+    document.body.appendChild(drop);
+    const r = btn.getBoundingClientRect();
+    drop.style.left = Math.max(4, Math.min(r.left, innerWidth - drop.offsetWidth - 4)) + 'px';
+    drop.style.top = r.bottom + 2 + 'px';
+    btn.classList.add('on');
+    open = {btn, drop};
+  };
+  nav.textContent = '';
+  for (const menu of menus) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'appmenu-btn';
+    btn.textContent = menu.label;
+    btn.onmousedown = (ev) => ev.preventDefault();
+    btn.onclick = () => { if (open && open.btn === btn) close(); else show(btn, menu); };
+    // Jako v nativní liště: s otevřeným menu stačí najet na vedlejší.
+    btn.onmouseenter = () => { if (open && open.btn !== btn) show(btn, menu); };
+    nav.appendChild(btn);
+  }
+  document.addEventListener('mousedown', (ev) => {
+    if (open && !open.drop.contains(ev.target) && !nav.contains(ev.target)) close();
+  }, true);
+  document.addEventListener('keydown', (ev) => { if (ev.key === 'Escape' && open) { ev.stopPropagation(); close(); } }, true);
+  addEventListener('blur', close);
+  addEventListener('resize', close);
+  nav.hidden = false;
+  api.menuVListe(true);
+}
+
 async function main() {
+  appMenu();
   // Hub na serveru: appka sem přišla s `#local=`, cestou zpátky na počítač.
   // Čte se hned, ať adresa s tokenem nezůstane viset v řádku ani v historii.
   HubServer.captureLocal();
