@@ -653,6 +653,14 @@
        jako „[Jméno] text“ (gateway/relace.py → sdilet_poslat); co prefix nemá,
        napsal majitel. Moje bubliny jsou vpravo v mé barvě, cizí vlevo a každý
        člověk má svou, vždy se jménem nad bublinou. */
+    // Každý člověk v chatu dostane další barvu z palety podle pořadí, v jakém se poprvé ozval
+    // (shodné pro všechny, kdo vidí stejný přepis); hash jen když lidí přibude víc než barev.
+    const lide = new Map();
+    function barvaLidi(kdo) {
+      const k = String(kdo).toLowerCase();
+      if (!lide.has(k)) lide.set(k, lide.size < KDO_PALETA.length ? KDO_PALETA[lide.size] : kdoBarva(kdo));
+      return lide.get(k);
+    }
     function bublina(b, cls, stitek) {
       const row = el('div', 'cteni-me' + (cls ? ' ' + cls : ''));
       let kdo = '';
@@ -664,7 +672,7 @@
         const moje = !!sd.ja && kdo.toLowerCase() === String(sd.ja).toLowerCase();
         row.classList.add(moje ? 'cteni-moje' : 'cteni-cizi');
         // Barva podle člověka (jméno z přihlášení), i u mých bublin; jméno se píše vždy.
-        row.style.setProperty('--kdo', kdoBarva(kdo));
+        row.style.setProperty('--kdo', barvaLidi(kdo));
         row.appendChild(el('div', 'cteni-kdo', kdo));
       }
       const bubble = el('div', 'cteni-bubble');
