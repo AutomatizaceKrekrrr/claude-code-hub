@@ -2165,9 +2165,11 @@
 
     const offRender = term.onRender(schedule);
     const offScroll = term.onScroll(schedule);
-    /* Tab na pozadí se nekreslí (onRender mlčí), ale dotaz v něm poznat
-       potřebujeme — ať jeho tab rozsvítí. Výpis se proto čte i bez kreslení. */
-    const offParsed = term.onWriteParsed(() => { if (!tab.pane.classList.contains('active')) schedule(); });
+    /* Tab na pozadí se nekreslí (onRender mlčí), a terminál pod čtením taky ne
+       (je odsunutý mimo obrazovku, hub.css) — dotaz v nich ale poznat musíme,
+       jinak se karta s otázkou neukáže a Claude čeká na povolení navždy.
+       Výpis se proto čte i bez kreslení; schedule() dvojí podnět sloučí. */
+    const offParsed = term.onWriteParsed(schedule);
     // Jiná velikost okna = jiná výška řádku i jiný počet řádků, přeměřit.
     const offResize = term.onResize(() => { dirty = true; schedule(); });
     // Roste s textem a mizí s přepnutím tabu — obojí musí hlášky poznat.
