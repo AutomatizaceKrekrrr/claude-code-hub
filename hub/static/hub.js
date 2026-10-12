@@ -3719,6 +3719,8 @@ function handle(msg) {
   // Appka se restartuje (aktualizace): nové okno se otevře samo, tohle se zavře.
   if (msg.t === 'okno-jdi' && /^http:\/\/127\.0\.0\.1:\d+\//.test(msg.url || '')) {
     // Restart po aktualizaci: stejné okno přejde rovnou na novou instanci.
+    // Není to odchod — bez HUB_LEAVING by se při práci Clauda ptal beforeunload.
+    window.HUB_LEAVING = true;
     setTimeout(() => { location.replace(msg.url); }, 150);
     return;
   }

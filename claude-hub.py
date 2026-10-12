@@ -16,6 +16,8 @@ pywinpty on Windows). One code path, all three platforms.
     python3 claude-hub.py                 open the hub
     python3 claude-hub.py --doctor        print what this machine has, then exit
     python3 claude-hub.py --no-browser    start the server and print the URL
+    python3 claude-hub.py --vlastni-okno  like --no-browser, but quits by itself once the
+                                          page is closed (window owned by desktop/)
     python3 claude-hub.py --no-browser --test
                                           test copy next to the real hub: no tab
                                           restore/saving, no link to the gateway
@@ -231,6 +233,8 @@ def main():
     args = sys.argv[1:]
     if "--test" in args:
         core.TEST_MODE = True
+    if "--vlastni-okno" in args:
+        core.VLASTNI_OKNO = True
     if "--doctor" in args:
         return doctor()
 
@@ -254,7 +258,7 @@ def main():
 
     # Appka už běží na pozadí (zavřené okno) → jen se k ní otevře nové okno.
     # Druhá instance nad stejnými chaty by si přepisovala konverzace.
-    if "--no-browser" not in args and not core.TEST_MODE:
+    if "--no-browser" not in args and "--vlastni-okno" not in args and not core.TEST_MODE:
         bezi = pozadi.bezici_url()
         if bezi:
             core.log("běží na pozadí — otevírám okno k ní")
@@ -265,7 +269,7 @@ def main():
 
     httpd, url = server.start()
     pozadi.zapis(url)
-    if "--no-browser" not in args:
+    if "--no-browser" not in args and "--vlastni-okno" not in args:
         # Aktualizace přepíše spouštěč na výchozí název a ikonu; okno se po
         # restartu jen přepne, takže vlastní vzhled se musí vrátit tady.
         try:
@@ -281,6 +285,12 @@ def main():
         # Tailscale se ptáme přes CLI, což trvá — okno na to nesmí čekat.
         threading.Thread(target=server.start_remote, daemon=True).start()
     try:
+        if "--vlastni-okno" in args:
+            # Okno si dělá jiná appka (desktop/): dostane adresu a server žije,
+            # dokud se k němu nějaká stránka připojuje — pak se zavře jako dřív.
+            print(url, flush=True)
+            wait_for_page(None)
+            return 0
         if "--no-browser" in args:
             print(url, flush=True)
             while True:

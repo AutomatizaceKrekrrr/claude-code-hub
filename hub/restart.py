@@ -349,7 +349,8 @@ def relaunch(hub, delay=0.6):
         try:
             # Nová instance okno sama neotvírá — stávající okno se na ni přepne
             # (rychlejší než zavřít okno a čekat, až Chromium otevře nové).
-            _spawn("--bez-okna")
+            # Okna appky (desktop/) si nová instance nesmí brát Chromem.
+            _spawn("--vlastni-okno" if core.VLASTNI_OKNO else "--bez-okna")
         except Exception as exc:
             core.log(f"restart: nová instance nenaběhla: {exc}", "error")
             return
@@ -366,22 +367,26 @@ def relaunch(hub, delay=0.6):
         except Exception:
             nova = ""
         try:
-            hub.broadcast({"t": "okno-jdi", "url": nova} if nova else {"t": "okno-zavri"})
+            if nova:
+                hub.broadcast({"t": "okno-jdi", "url": nova})
+            elif not core.VLASTNI_OKNO:     # appka okna přepne sama, až nová naběhne
+                hub.broadcast({"t": "okno-zavri"})
         except Exception:
             pass
         time.sleep(0.4)                     # ať zpráva stihne odejít
         core.log("restart: nová instance spuštěna, končím")
         # Okno, které se nepřepnulo (nová instance nenaběhla), se zavře — nová
-        # si otevře vlastní. Jinak by tu zůstala dvě.
-        if not nova:
+        # si otevře vlastní. Jinak by tu zůstala dvě. Okna appky ne: ta si
+        # novou instanci najdou sama (desktop/main.js, hlídač).
+        if nova:
+            core.log("restart: okno přepnuto na novou instanci")
+        elif not core.VLASTNI_OKNO:
             try:
                 n = window.zavri_okno(stara)
                 if n:
                     core.log(f"restart: zavřeno staré okno ({n})")
             except Exception:
                 pass
-        else:
-            core.log("restart: okno přepnuto na novou instanci")
         # Terminály stejně umírají s procesem; tohle je pošle spát řízeně,
         # ať po sobě Claude Code stihne zavřít přepisy.
         try:

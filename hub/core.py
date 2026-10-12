@@ -68,6 +68,9 @@ CLAUDE_DIR = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(HOME, ".claude"
 # hubu jeho uložené taby a pustil druhého Clauda na tytéž konverzace)
 # a nepřipojuje se k bráně jako tenhle počítač.
 TEST_MODE = os.environ.get("HUB_TEST") == "1"
+# Okno drží jiná appka (desktop/, `claude-hub.py --vlastni-okno`). Restart po
+# aktualizaci pak novou instanci pouští stejně a okna nezavírá — přepne je appka.
+VLASTNI_OKNO = False
 CONFIG_PATH = os.path.join(CLAUDE_DIR, "hub-config.json")
 
 # Everything machine-specific lives in hub-config.json — see hub-config.example.json.
