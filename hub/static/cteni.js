@@ -350,8 +350,31 @@
   /* Proud bloků. Stejný pro živý tab i pro okno se starou konverzací.
      `imageUrl` převede cestu k obrázku z hub-images na adresu, ze které ho
      stránka smí načíst (/api/image). */
+  /* Rychlé odpovědi. Claude často končí „Napiš „pushni““ — místo psaní
+     (nebo kopírování celé věty) stačí klepnout. Bere se, co je v uvozovkách
+     za slovesem (napiš, odpověz, pošli, stačí…), i další volby za „nebo“,
+     a celý řádek „Rychlá odpověď: „A“ · „B““. Kód se přeskakuje. */
+  const UVOZ = '[„"]([^“”"\\n]{1,60})[“”"]';
+  const VOLBY_RADEK = /^\s*(?:[-*]\s*)?(?:\*\*)?(?:rychlá odpověď|rychlé odpovědi|odpověz|odpovědi)(?::\*\*|\*\*\s*:|:)(.*)$/gimu;
+  const VOLBY_SLOVESO = new RegExp('(?<!\\p{L})(?:napiš|napište|odpověz|odpovězte|pošli|pošlete|' +
+    'stačí napsat|stačí|řekni|řekněte)\\s*:?\\s*' + UVOZ +
+    '((?:\\s*(?:,\\s*(?:nebo|anebo|či|případně)?|/|nebo|anebo|či|případně)\\s*[„"][^“”"\\n]{1,60}[“”"])*)', 'giu');
+  function rychleOdpovedi(text) {
+    const out = [];
+    const pridej = (t) => {
+      t = t.trim().replace(/[.,!?…]+$/u, '');
+      if (t && !out.includes(t) && out.length < 6) out.push(t);
+    };
+    const uvozovky = (kus) => { for (const m of kus.matchAll(new RegExp(UVOZ, 'gu'))) pridej(m[1]); };
+    const bezKodu = String(text || '').replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '');
+    for (const m of bezKodu.matchAll(VOLBY_RADEK)) uvozovky(m[1]);
+    for (const m of bezKodu.matchAll(VOLBY_SLOVESO)) { pridej(m[1]); if (m[2]) uvozovky(m[2]); }
+    return out;
+  }
+
   function flow(mount, imageUrl, {historie = false, openLink = null, notice = null, zive = null,
-                                  udalost = null, naPrehled = null, dulKlic = null, copy = null, sdileny = null} = {}) {
+                                  udalost = null, naPrehled = null, dulKlic = null, copy = null, sdileny = null,
+                                  odpovez = null} = {}) {
     /* Odkaz v Markdownu je <a> bez href (vault.js) — sám nikam nevede,
        otevřít ho musí hub. V okně appky by holý odkaz stejně nic neudělal. */
     mount.addEventListener('click', (ev) => {
@@ -363,6 +386,8 @@
     });
 
     const tools = new Map();          // id nástroje → jeho řádek
+    // Tlačítka rychlé odpovědi — jen pod poslední odpovědí Clauda.
+    let volby = null;
     const agenti = new Map();         // id volání Agent → karta
     let prace = null;                 // řádek „Claude pracuje…"
     let skupina = null;               // karty agentů puštěných najednou
@@ -1035,6 +1060,7 @@
         return;
       }
       if (b.kind === 'me') {
+        if (volby) { volby.remove(); volby = null; }
         for (const key of b.doruceno || []) dorucenoPoRestartu(key);
         /* Stejná věta dvakrát za sebou: zařazení druhé do fronty se v přepisu
            často zapíše dřív než zadání první. Zadání pak vypadá jako „to, co
@@ -1113,11 +1139,27 @@
         return;
       }
       if (b.kind === 'say') {
+        if (volby) { volby.remove(); volby = null; }
         const box = el('div', 'cteni-say vault-md');
         const html = markdown(b.text);
         if (html) { box.innerHTML = html; ozivHtml(box); }
         else box.textContent = b.text;
         mount.appendChild(box);
+        const moznosti = odpovez ? rychleOdpovedi(b.text) : [];
+        if (moznosti.length) {
+          volby = el('div', 'cteni-volby');
+          for (const text of moznosti) {
+            const btn = el('button', 'cteni-volba', text);
+            btn.type = 'button';
+            btn.title = 'Odeslat Claudovi: ' + text;
+            btn.onclick = () => {
+              if (!odpovez(text)) { if (notice) notice('Odpověď teď nejde odeslat — napiš ji dole.'); return; }
+              if (volby) { volby.remove(); volby = null; }
+            };
+            volby.appendChild(btn);
+          }
+          box.appendChild(volby);
+        }
         pripojPoznamku(box, b.text);
         // Přečíst nahlas (hlas.js) — tlačítko v rohu bubliny. Nová odpověď
         // v tabu, na který se člověk dívá, se se zapnutým předčítáním čte sama.
@@ -1354,7 +1396,7 @@
     /* Předčítá se jen to, co přibude naživo — ne historie při otevření tabu. */
     let nacteno = false;
     const proud = flow(mount, io.imageUrl, {
-      openLink: io.openLink, notice: io.notice, copy: io.copy,
+      openLink: io.openLink, notice: io.notice, copy: io.copy, odpovez: io.odpovez,
       zive: () => nacteno && !!global.HubHlas && global.HubHlas.auto.get() &&
                   (!io.aktivni || io.aktivni()),
       naPrehled: () => { if (io.prehled) io.prehled(); },

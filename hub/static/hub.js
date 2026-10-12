@@ -2802,6 +2802,8 @@ function createTab({kind, path, title, id, agent, model, background, bypass, mod
       (agent || STATE.default_agent || 'claude') === 'claude') {
     tab.cteni = HubCteni.install(tab, {api, notice: toast, imageUrl, openLink, copy: copyText,
                                        aktivni: () => ACTIVE === tab,
+                                       // Tlačítko rychlé odpovědi pod odpovědí Clauda.
+                                       odpovez: (text) => !!(tab.composer && tab.composer.run(text + '\r')),
                                        // Panel Průběh vpravo (renderPrehled).
                                        prehled: () => { if (ACTIVE === tab) showActionbar(tab); }});
     // Úsilí mohla bublina zjistit dřív, než vzniklo hřiště — Claudík se převlékne hned.
