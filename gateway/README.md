@@ -49,6 +49,13 @@ pustí bránu jako uživatelskou službu, nastaví nginx s certifikátem, firewa
 fail2ban, swap a bezpečnostní aktualizace. Když doména na server ještě
 nemíří, certifikát přeskočí — stačí nastavit DNS a pustit ho znovu.
 
+Ověřené je i **Ubuntu 26.04 na arm64** (Asahi Linux na MacBooku s M1, jádro se
+stránkami 16K): Claude Code, Node, Chromium pro Clauda, hlas i agenti tam jedou.
+Python je tam 3.14, takže aider (má pevné numpy 1.26, sestavené jen pro starší
+Python) jede na 3.12, který si uv stáhne pod `/usr/local/lib/uv-python`.
+Doplněk, který se nenainstaluje (agent, `gh`), skončí varováním — brána,
+nginx a zálohy se nastaví i bez něj.
+
 Opakovaný běh je bezpečný: co je hotové, nechá být, stáhne novější hub a bránu
 restartuje, jen když se něco změnilo (`--no-restart` ji nechá běžet). Účty se
 pak spravují přes `claude-hub-admin` (obal nad `python3 -m gateway.admin` se
