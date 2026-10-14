@@ -64,13 +64,14 @@ main() {
     # ní stejně nechal jen KEEP-1 starých — když se nevejde, smažou se ty
     # navíc už teď, ne až po ní (jinak by na disku musely být KEEP+1 kusy).
     # Poslední dobrou zálohu nikdy předem nemaže: kdyby nová selhala, nezbyla
-    # by žádná.
+    # by žádná. Když místo nestačí ani tak, záloha se nedělá vůbec.
     local last need free f
     last="$(ls -1t "$DEST"/hub-*.tar.zst.gpg 2>/dev/null | head -n 1)"
     if [ -n "$last" ]; then
         # + rezerva pro běžící prostory: lidé během zálohy dál zapisují
         # a plný disk by jim shodil práci, ne jen zálohu.
-        need=$(( $(stat -c %s "$last") * 11 / 10 + REZERVA_MB * 1024 * 1024 ))
+        # +30 %: data lidí rostou rychle (záloha za tři dny i o víc než 18 %).
+        need=$(( $(stat -c %s "$last") * 13 / 10 + REZERVA_MB * 1024 * 1024 ))
         while read -r f; do
             [ -n "$f" ] || continue
             free="$(df --output=avail -B1 "$DEST" | tail -n 1)"
@@ -80,7 +81,10 @@ main() {
         done <<<"$(ls -1t "$DEST"/hub-*.tar.zst.gpg 2>/dev/null | tail -n +$((KEEP > 1 ? KEEP : 2)) | tac)"
         free="$(df --output=avail -B1 "$DEST" | tail -n 1)"
         if [ "$free" -le "$need" ]; then
-            log "VAROVÁNÍ: na disku je $((free / 1024 / 1024)) MB, se zálohou a rezervou je potřeba asi $((need / 1024 / 1024)) MB — zkouším i tak"
+            # Plný disk by shodil prostory všem — radši žádná nová záloha.
+            log "CHYBA: na disku je $((free / 1024 / 1024)) MB, se zálohou a rezervou je potřeba asi $((need / 1024 / 1024)) MB — zálohu nedělám, uvolni místo"
+            echo "Na disku není místo na zálohu (volno $((free / 1024 / 1024)) MB, potřeba $((need / 1024 / 1024)) MB)." >&2
+            exit 1
         fi
     fi
 
