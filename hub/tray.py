@@ -20,7 +20,7 @@ import sys
 import urllib.parse
 import urllib.request
 
-NAZEV = "Claude Code Hub"
+NAZEV = "Paluba"
 
 
 def _api(base, name):

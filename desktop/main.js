@@ -111,8 +111,8 @@ function najdiPython() {
 
 function nenainstalovano(text) {
   const volba = dialogOkno({
-    type: 'info', title: 'Claude Code Hub',
-    message: 'Claude Code Hub ještě není nainstalovaný.',
+    type: 'info', title: 'Paluba',
+    message: 'Paluba ještě není nainstalovaná.',
     detail: text, buttons: ['Stáhnout instalaci', 'Zavřít'], defaultId: 0, cancelId: 1,
   });
   if (volba === 0) shell.openExternal(RELEASES);
@@ -127,7 +127,7 @@ function spustHub() {
   if (hubBezZnacky(launcher)) {
     // „Spustit i tak" pro případ, že proces jen zůstal viset bez okna.
     const volba = dialogOkno({
-      type: 'warning', title: 'Claude Code Hub',
+      type: 'warning', title: 'Paluba',
       message: 'Hub už běží v jiném okně.',
       detail: 'Je to starší verze, ke které se tahle appka neumí připojit. Zavři okno hubu '
         + '(v Chromu) a spusť appku znovu — dvě instance nad stejnými chaty by si přepisovaly konverzace.',
@@ -232,7 +232,7 @@ function noveOkno(url) {
   }
   const icon = path.join(__dirname, '..', 'assets', 'claude-code.png');
   const win = new BrowserWindow({
-    ...opts, minWidth: 720, minHeight: 480, title: 'Claude Code Hub',
+    ...opts, minWidth: 720, minHeight: 480, title: 'Paluba',
     backgroundColor: nativeTheme.shouldUseDarkColors ? '#0d0f12' : '#ffffff',
     ...(fs.existsSync(icon) ? { icon } : {}),
     // Menu kreslí hub v liště (window.hubApp) — nativní lišta je schovaná a Alt
@@ -262,7 +262,7 @@ function noveOkno(url) {
   win.webContents.on('will-prevent-unload', (e) => {
     // Platí pro zavření okna i pro Znovu načíst — proto obecně „odejít".
     const volba = dialogOkno({
-      type: 'question', title: 'Claude Code Hub', buttons: ['Odejít', 'Zůstat'], defaultId: 1, cancelId: 1,
+      type: 'question', title: 'Paluba', buttons: ['Odejít', 'Zůstat'], defaultId: 1, cancelId: 1,
       message: 'Claude ještě pracuje. Opravdu odejít?',
       detail: 'Rozdělaná práce v tabech se přeruší.',
       volbaVZkousce: 0,
@@ -290,7 +290,7 @@ async function otevriOkno(primo = '') {
   } catch (e) {
     if (!/není nainstalovaný|chybí Python|bez značky/.test(String(e.message))) {
       if (TEST) hlasky.push(String(e.message || e));
-      else dialog.showErrorBox('Claude Code Hub se nepodařilo spustit', String(e.message || e));
+      else dialog.showErrorBox('Palubu se nepodařilo spustit', String(e.message || e));
     }
     if (TEST) {             // zkouška se k rychle skončené appce nestihne připojit
       try { fs.writeFileSync(path.join(app.getPath('userData'), 'hlasky.json'), JSON.stringify(hlasky)); } catch (_) { /* nic */ }
@@ -335,10 +335,10 @@ function sestavMenu() {
   ] };
   const template = [
     ...(IS_MAC ? [{ label: app.name, submenu: [
-      { role: 'about', label: 'O aplikaci Claude Code Hub' }, { type: 'separator' },
+      { role: 'about', label: 'O aplikaci Paluba' }, { type: 'separator' },
       { role: 'services' }, { type: 'separator' },
       { role: 'hide' }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' },
-      { role: 'quit', label: 'Ukončit Claude Code Hub' },
+      { role: 'quit', label: 'Ukončit Palubu' },
     ] }] : []),
     { label: 'Soubor', submenu: [
       // Na Windows a Linuxu patří Ctrl+N a Ctrl+W terminálu (historie, mazání
@@ -361,7 +361,7 @@ function sestavMenu() {
       { label: 'Maximalizovat', click: (_i, win) => { if (win) { if (win.isMaximized()) win.unmaximize(); else win.maximize(); } } },
     ] },
     { label: 'Nápověda', submenu: [
-      { label: 'Claude Code Hub na GitHubu', click: () => ven('https://github.com/jurapascal/claude-code-hub') },
+      { label: 'Paluba na GitHubu', click: () => ven('https://github.com/jurapascal/claude-code-hub') },
     ] },
   ];
   // Každá položka dostane id — podle něj ji spouští menu nakreslené v hubu.

@@ -1,0 +1,9 @@
+/* Námořní — jen jemně: ostřejší rohy a mosazná linka pod horní lištou.
+   Barvy dělá motiv.json (paleta), tady se na ně nesahá. */
+:root {
+  --radius: 6px;
+  --radius-lg: 10px;
+}
+.topbar {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--amber) 35%, transparent);
+}

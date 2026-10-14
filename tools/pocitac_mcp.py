@@ -56,7 +56,7 @@ v prostoru uživatele.
   — používej je jen tehdy, když to opravdu potřebuješ, a nic z toho nepřepisuj dál,
   než je nutné.
 - Když počítač není připojený, řekni uživateli, ať má na počítači otevřenou appku
-  Claude Code Hub a v Nastavení → Účet zapnutý přístup pro Clauda ze serveru.
+  Paluba a v Nastavení → Účet zapnutý přístup pro Clauda ze serveru.
 - Když připojený není a má se na něm něco udělat, nemusí se čekat: co jde, připrav
   tady na serveru a nech počítači úkol přes `nechat_ukol`. Až se počítač připojí,
   otevře se na něm tab s Claude Code, který úkol podle tvého zadání dodělá. Jak
@@ -131,7 +131,7 @@ TOOLS = [
          "pocitac": _PC}}},
     {"name": "nechat_ukol",
      "description": "Nechá úkol pro Clauda na počítači uživatele, který teď není připojený "
-                    "(nebo když to má počkat). Až se počítač připojí — appka Claude Code Hub "
+                    "(nebo když to má počkat). Až se počítač připojí — appka Paluba "
                     "otevřená a přístup pro Clauda ze serveru zapnutý — otevře se na něm tab "
                     "s Claude Code, dostane tvoje zadání a přílohy a úkol dodělá. Zadání piš "
                     "samostatně: Claude na počítači tuhle konverzaci nevidí, ví jen to, co "
@@ -275,7 +275,7 @@ def t_pocitace(a):
     later = f"Na počítač čeká úkolů na později: {waiting} (ukoly_pro_pocitac)." if waiting else ""
     if not online:
         return ("Žádný počítač uživatele teď není připojený. Musí mít na počítači otevřenou "
-                "appku Claude Code Hub přihlášenou k tomuhle serveru a v Nastavení → Účet "
+                "appku Paluba přihlášenou k tomuhle serveru a v Nastavení → Účet "
                 "zapnutý přístup „Claude ze serveru na tomhle počítači\". Když to může počkat, "
                 "nech počítači úkol (nechat_ukol). " + later).strip()
     lines = []
@@ -446,7 +446,7 @@ def t_nechat_ukol(a):
     if online:
         out.append(f"Počítač {online[0].get('name')} je připojený — vyzvedne si ho hned.")
     else:
-        out.append("Až se počítač připojí (appka Claude Code Hub otevřená, přístup pro Clauda "
+        out.append("Až se počítač připojí (appka Paluba otevřená, přístup pro Clauda "
                    "ze serveru zapnutý), otevře se na něm tab s Claude Code a úkol dodělá. "
                    "S plným přístupem se spustí sám, s přístupem jen ke čtení ho uživatel "
                    "na počítači potvrdí.")

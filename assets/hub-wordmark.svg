@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Claude Code Hub — logo se jménem. Značka + text, na tmavém i světlém
+<!-- Paluba — logo se jménem. Značka + text, na tmavém i světlém
      podkladu (barvy jsou z palety aplikace, pozadí je průhledné). -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 200" width="720" height="200">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 200" width="560" height="200">
   <style>
     /* Jeden soubor pro obojí: text se řídí motivem toho, kdo se dívá.
        Výchozí je tmavý text pro světlý podklad (README na GitHubu, tisk). */
@@ -19,24 +19,22 @@
     </linearGradient>
   </defs>
 
-  <!-- značka -->
+  <!-- značka (stejná jako hub-mark.svg) -->
   <g transform="translate(20,20) scale(0.625)">
     <rect width="256" height="256" rx="56" fill="url(#tile)"/>
     <rect x="1.5" y="1.5" width="253" height="253" rx="54.5"
           fill="none" stroke="#e0843c" stroke-opacity=".28" stroke-width="3"/>
-    <g fill="url(#amber)">
-      <rect x="40" y="78"  width="34" height="15" rx="7.5"/>
-      <rect x="40" y="120" width="34" height="15" rx="7.5" opacity=".72"/>
-      <rect x="40" y="162" width="34" height="15" rx="7.5" opacity=".46"/>
-    </g>
-    <path d="M108 98 L140 128 L108 158" fill="none" stroke="url(#amber)"
-          stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/>
-    <rect x="156" y="145" width="60" height="16" rx="8" fill="url(#amber)"/>
+    <path d="M96 52 L160 108 L96 164" fill="none" stroke="url(#amber)"
+          stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M96 52 V164" stroke="#e8893f" stroke-width="8"
+          stroke-linecap="round" opacity=".45"/>
+    <path d="M48 182 H208 L192 206 Q188 212 180 212 H76 Q68 212 64 206 Z"
+          fill="url(#amber)"/>
   </g>
 
   <!-- jméno -->
-  <text x="212" y="92" font-family="Inter, 'DejaVu Sans', system-ui, sans-serif"
-        font-size="54" font-weight="700" class="name" letter-spacing="-1">Claude Code</text>
-  <text x="212" y="150" font-family="Inter, 'DejaVu Sans', system-ui, sans-serif"
-        font-size="54" font-weight="700" fill="#e0843c" letter-spacing="6">HUB</text>
+  <text x="214" y="128" font-family="Inter, 'DejaVu Sans', system-ui, sans-serif"
+        font-size="84" font-weight="700" class="name" letter-spacing="-1.5">Paluba</text>
+  <!-- kurzor pod jménem, ať text navazuje na trup lodi -->
+  <rect x="218" y="146" width="64" height="12" rx="6" fill="url(#amber)"/>
 </svg>

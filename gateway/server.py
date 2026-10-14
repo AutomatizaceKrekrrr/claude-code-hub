@@ -483,7 +483,7 @@ def _page(title, body):
 <meta name=mobile-web-app-capable content=yes>
 <meta name=apple-mobile-web-app-capable content=yes>
 <meta name=apple-mobile-web-app-status-bar-style content=black-translucent>
-<meta name=apple-mobile-web-app-title content="Claude Hub">
+<meta name=apple-mobile-web-app-title content="Paluba">
 <style>
 :root{color-scheme:dark}
 *{box-sizing:border-box}
@@ -519,7 +519,7 @@ background:#e0a458;color:#1a1710;font-weight:600;text-decoration:none}
 
 def error_page(message):
     """Chyba, kterou uvidí člověk v prohlížeči — věta a tlačítko zkusit znovu."""
-    return _page("Chvilku strpení — Claude Hub", f"""
+    return _page("Chvilku strpení — Paluba", f"""
 <div class=card>
 <h1>Chvilku strpení</h1>
 <p class=sub>{html.escape(message)}</p>
@@ -571,9 +571,9 @@ PASSKEY_LOGIN_JS = """<script>
 
 def login_page(error=""):
     err = f'<div class=err>{html.escape(error)}</div>' if error else ''
-    return _page("Přihlášení — Claude Hub", f"""
+    return _page("Přihlášení — Paluba", f"""
 <form class=card method=post action="/login">
-<h1>Claude Hub</h1>
+<h1>Paluba</h1>
 <p class=sub>Přihlaš se ke svému účtu na serveru.</p>
 <label>E-mail</label>
 <input name=email type=email autocomplete=username autofocus required>
@@ -628,7 +628,7 @@ def code_page(ticket, error="", passkey=False):
           '<div class=err id=pkerr></div>'
           '<p class=hint>Otisk prstu, obličej, PIN nebo bezpečnostní klíč. Nebo opiš kód níž.</p>'
           ) if passkey else ''
-    return _page("Ověření — Claude Hub", f"""
+    return _page("Ověření — Paluba", f"""
 <form class=card method=post action="/login/2fa">
 <h1>Ověření</h1>
 {pk}
@@ -648,7 +648,7 @@ def setup_page(ticket, secret, email, error=""):
     """Při prvním přihlášení: zapnutí dvoufázového ověření."""
     err = f'<div class=err>{html.escape(error)}</div>' if error else ''
     svg = qr.svg(totp.uri(secret, email), quiet=2, scale=5)
-    return _page("Dvoufázové ověření — Claude Hub", f"""
+    return _page("Dvoufázové ověření — Paluba", f"""
 <form class="card wide" method=post action="/login/2fa">
 <h1>Zapni dvoufázové ověření</h1>
 <p class=sub>Přihlášení na server teď chce kromě hesla i kód z telefonu.</p>
@@ -672,7 +672,7 @@ def setup_page(ticket, secret, email, error=""):
 def recovery_page(codes):
     """Záložní kódy hned po zapnutí ověřování — ukážou se jen tady."""
     items = "".join(f"<code>{html.escape(c)}</code>" for c in codes)
-    return _page("Záložní kódy — Claude Hub", f"""
+    return _page("Záložní kódy — Paluba", f"""
 <div class="card wide">
 <h1>Záložní kódy</h1>
 <p class=sub>Když ztratíš telefon, přihlásíš se jedním z nich — každý platí
@@ -1462,10 +1462,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._redirect("/login", extra={"Set-Cookie": f"hub_zar={nonce}; Path=/; HttpOnly; "
                                                                  f"SameSite=Lax; Max-Age=600{flags}"})
         if method != "POST":
-            return self._send(200, _page("Přihlášení appky — Claude Hub", f"""
+            return self._send(200, _page("Přihlášení appky — Paluba", f"""
 <form class=card method=post action="/zarizeni">
 <h1>Povolit přihlášení?</h1>
-<p class=sub>Appka <b>Claude Code Hub</b> na zařízení <b>{html.escape(z["label"])}</b>
+<p class=sub>Appka <b>Paluba</b> na zařízení <b>{html.escape(z["label"])}</b>
 chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
 <input type=hidden name=n value="{html.escape(nonce)}">
 <button type=submit>Povolit</button>
@@ -1476,7 +1476,7 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         token = self.accounts.issue_token(user, "Appka · " + z["label"], mfa=True)
         with _ticket_lock:
             z["token"], z["user"] = token, user
-        return self._send(200, _page("Hotovo — Claude Hub", """
+        return self._send(200, _page("Hotovo — Paluba", """
 <div class=card>
 <h1>Hotovo</h1>
 <p class=sub>Appka je přihlášená. Tuhle stránku můžeš zavřít a vrátit se do appky.</p>
@@ -1501,7 +1501,7 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
                 _pk_reg[user["id"]] = (challenge, time.time() + 300)
             return self._json({
                 "challenge": webauthn.b64e(challenge),
-                "rp": {"id": rp_id, "name": "Claude Hub"},
+                "rp": {"id": rp_id, "name": "Paluba"},
                 "user": {"id": webauthn.b64e(hashlib.sha256(f"claude-hub:{user['id']}".encode()).digest()),
                          "name": user["email"], "displayName": user.get("name") or user["email"]},
                 "algs": list(webauthn.ALGS),

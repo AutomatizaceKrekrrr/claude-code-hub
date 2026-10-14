@@ -162,7 +162,39 @@ const CSS_VARS = {
   CLOUD: '--cloud', FIRMA: '--firma', CHART: '--chart',
 };
 
-function palette() { return DARK ? STATE.palette.dark : STATE.palette.light; }
+/* Paleta okna: výchozí z hubu (core.DARK / LIGHT), přes ni barvy zapnutého
+   motivu (hub/motivy.py) — co motiv nemá, zůstane výchozí. Volá se i dřív,
+   než je stav načtený, pak je prázdná a applyTheme nic nepřepíše. */
+function palette() {
+  const base = (STATE && STATE.palette && (DARK ? STATE.palette.dark : STATE.palette.light)) || {};
+  const motiv = STATE && STATE.motiv && STATE.motiv.barvy && STATE.motiv.barvy[DARK ? 'dark' : 'light'];
+  return motiv ? {...base, ...motiv} : base;
+}
+
+/* Zapnutý motiv: barvy jdou přes palette(), jeho CSS (fonty, rozložení) se
+   načte jako <link id="hub-motiv"> za hub.css. Prázdné id = výchozí vzhled. */
+function applyMotiv(m) {
+  const motiv = m && m.id ? m : {id: ''};
+  if (STATE) STATE.motiv = motiv;
+  let link = document.getElementById('hub-motiv');
+  const href = motiv.id && motiv.style
+    ? `/api/motiv-soubor?id=${encodeURIComponent(motiv.id)}&f=${encodeURIComponent(motiv.style)}` +
+      `&v=${encodeURIComponent(motiv.v || '')}&t=${encodeURIComponent(TOKEN)}`
+    : '';
+  if (!href) {
+    if (link) link.remove();
+  } else {
+    if (!link) {
+      link = document.createElement('link');
+      link.id = 'hub-motiv';
+      link.rel = 'stylesheet';
+      document.head.appendChild(link);
+    }
+    if (link.getAttribute('href') !== href) link.setAttribute('href', href);
+  }
+  document.documentElement.dataset.motiv = motiv.id;
+  applyTheme();
+}
 
 /* Barva tabu: nad firemním trezorem fialová, jinak barva prostředí — na
    počítači jantarová, v prostoru na serveru modrá. Kurzor, výběr i to, co si
@@ -194,7 +226,7 @@ function termTheme(tab) {
 function applyTheme() {
   const p = palette();
   for (const [key, cssVar] of Object.entries(CSS_VARS)) {
-    document.documentElement.style.setProperty(cssVar, p[key]);
+    if (p[key]) document.documentElement.style.setProperty(cssVar, p[key]);
   }
   // Sloupce ve statistikách jdou s prostředím jako zbytek okna. Vlastní krok
   // mají proto, že samotná barva prostředí je na graf málo kontrastní.
@@ -2130,12 +2162,13 @@ function placeName() {
 }
 
 /* Vlastní název a ikona appky (Nastavení → Vzhled, hub/vzhled.py): v liště,
-   v šuplíku a na úvodní stránce. Bez nastavení zůstává „Claude Code". */
+   v šuplíku a na úvodní stránce. Bez nastavení zůstává „Paluba"
+   (app.shown = vlastní název, jinak výchozí ze serveru). */
 function renderBranding() {
   const app = STATE.app || {};
-  const name = app.name || 'Claude';
+  const name = app.shown || 'Paluba';
   // Titulek = název okna appky (Chrome v režimu appky, záložka prohlížeče).
-  document.title = titulekOkna(app.name ? app.name : 'Claude ' + placeName());
+  document.title = titulekOkna(app.name ? app.name : name + ' ' + placeName());
   const home = $('btn-home');
   if (home) {
     home.querySelector('strong').textContent = name;
@@ -2173,14 +2206,15 @@ function renderPlace() {
   if (!badge) return;
   const u = STATE.config.gateway_user;
   const app = STATE.app || {};
-  document.title = titulekOkna(app.name ? app.name : 'Claude ' + placeName());
+  const shown = app.shown || 'Paluba';
+  document.title = titulekOkna(app.name ? app.name : shown + ' ' + placeName());
   const big = $('welcome-place');
   if (big) big.textContent = placeName();
   renderBranding();
   // Barva celé appky se odvozuje odsud: počítač jantarově, prostor modře.
   document.documentElement.dataset.place = u ? 'server' : 'pc';
   badge.textContent = u ? 'Server' : 'PC';
-  badge.setAttribute('aria-label', 'Claude ' + placeName());
+  badge.setAttribute('aria-label', shown + ' ' + placeName());
   badge.classList.toggle('on-server', !!u);
   /* Přepnout jde jen z appky: okno v prohlížeči se na počítač vrátit nemá kam.
      Tam je odznak pouhá cedulka — po kliknutí se nestane nic a netváří se, že
@@ -2651,7 +2685,7 @@ async function reload() {
   renderWelcome();
   renderNewTabButtons();
   for (const t of TABS) paintAgent(t);
-  applyTheme();
+  applyMotiv(STATE.motiv);           // motiv (barvy + CSS) a s ním applyTheme
 }
 
 /* ── agenti ───────────────────────────────────────────────────────────────── */
@@ -4059,7 +4093,9 @@ function hubIO() {
     open: openLink,
     pickFolder,
     reload,
-    refreshState: async () => { STATE = await api('state'); markAdvanced(); renderBranding(); },
+    refreshState: async () => { STATE = await api('state'); markAdvanced(); renderBranding(); applyMotiv(STATE.motiv); },
+    // Motiv přepnutý v Nastavení → Paluba Market → Motivy, bez obnovení okna.
+    setMotiv: applyMotiv,
     openWizard: () => HubOnboarding.open({...hubIO(), state: STATE}),
     /* Přihlášení jiným účtem. `/login` žije uvnitř Claude Code, ne v shellu,
        tak se otevře tab, který ho dostane rovnou jako první příkaz — stejnou
@@ -4260,7 +4296,7 @@ async function main() {
   // Pluginy appky (pluginy.js, hub/pluginy.py) — zapnuté se načtou teď.
   if (window.HubPluginy) {
     HubPluginy.start({
-      api, toast, token: TOKEN, renderActions,
+      api, toast, token: TOKEN, renderActions, open: openLink,
       aktivniTab: () => (ACTIVE ? {id: ACTIVE.id, title: ACTIVE.title, path: ACTIVE.path || ''} : null),
       posli: (text) => {
         if (!ACTIVE || !ACTIVE.composer || !text) return false;
@@ -4635,7 +4671,7 @@ function startSplash() {
   root.innerHTML = `
     <div class="ss-box">
       <div class="ss-ring"><svg class="ico"><use href="#i-hub"/></svg></div>
-      <div class="ss-title">Claude Hub</div>
+      <div class="ss-title">Paluba</div>
       <div class="ss-text"></div>
       <div class="ss-steps"><span data-s="check">Kontrola</span><span data-s="download">Stahování</span><span data-s="install">Instalace</span></div>
     </div>`;

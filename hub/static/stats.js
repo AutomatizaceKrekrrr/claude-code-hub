@@ -49,24 +49,68 @@
     return String(n);
   }
 
-  /* Sloupcový graf: tenké značky posazené na základně, mezera 2 px, hodnota
-     po najetí. Popisek se píše jen pod vybrané sloupce, ne pod každý. */
+  /* „Pěkná" stupnice: nejbližší vyšší krok 1/2/5 × 10^n, ať jsou čáry na
+     kulatých číslech (0, 50, 100, 150…) a ne na 37,4. */
+  function stupnice(max, cilKroku) {
+    const hrub = max / Math.max(1, cilKroku);
+    const mag = Math.pow(10, Math.floor(Math.log10(hrub)));
+    const f = hrub / mag;
+    const krok = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * mag;
+    const top = Math.ceil(max / krok) * krok;
+    const ticks = [];
+    for (let v = 0; v <= top + krok / 2; v += krok) ticks.push(v);
+    return {top, ticks};
+  }
+
+  /* Sloupcový graf: osa Y s kulatými hodnotami a vodorovnou mřížkou, popisky
+     dní po osě X a vlastní bublina po najetí (hodnota + den). */
   function bars(items, opts) {
     opts = opts || {};
     const max = Math.max(1, ...items.map(i => i.value));
+    const {top, ticks} = stupnice(max, 4);
     const wrap = el('div', 'st-chart');
+    const yaxis = el('div', 'st-yaxis');
+    for (const v of ticks) {
+      const t = el('span', 'st-ytick', cislo(v));
+      t.style.bottom = (v / top * 100) + '%';
+      yaxis.appendChild(t);
+    }
     const plot = el('div', 'st-plot');
-    for (const item of items) {
+    for (const v of ticks) {
+      const g = el('div', 'st-grid' + (v === 0 ? ' zero' : ''));
+      g.style.bottom = (v / top * 100) + '%';
+      plot.appendChild(g);
+    }
+    // Popisky osy X: kde je zadaný `tick`, ten; u dnů jinak každý n-tý.
+    const krok = Math.ceil(items.length / 8);
+    const maDatum = (i) => /^\d{4}-\d{2}-\d{2}$/.test(i.full || '');
+    const tip = el('div', 'st-tip');
+    tip.hidden = true;
+    items.forEach((item, idx) => {
       const col = el('div', 'st-col');
       const bar = el('div', 'st-bar');
-      bar.style.height = Math.max(item.value ? 2 : 0, item.value / max * 100) + '%';
+      bar.style.height = Math.max(item.value ? 2 : 0, item.value / top * 100) + '%';
       if (opts.dim && opts.dim(item)) bar.classList.add('dim');
       col.appendChild(bar);
-      col.title = `${item.full || item.label}: ${cislo(item.value)}${opts.unit || ''}`;
-      if (item.tick) col.appendChild(el('span', 'st-tick', item.tick));
+      let tick = item.tick;
+      if (maDatum(item) && items.length > 14) {
+        tick = (idx % krok === 0 && items.length - 1 - idx >= krok / 2) || idx === items.length - 1
+          ? item.full.slice(8) + '. ' + Number(item.full.slice(5, 7)) + '.' : '';
+      }
+      if (tick) col.appendChild(el('span', 'st-tick', tick));
+      const text = `${item.full || item.label}: ${cislo(item.value)}${opts.unit || ''}`;
+      col.onmouseenter = () => {
+        tip.textContent = text;
+        tip.hidden = false;
+        const pw = plot.clientWidth, cx = col.offsetLeft + col.offsetWidth / 2;
+        tip.style.left = Math.min(pw - tip.offsetWidth / 2, Math.max(tip.offsetWidth / 2, cx)) + 'px';
+        tip.style.bottom = (bar.offsetHeight + 18) + 'px';
+      };
+      col.onmouseleave = () => { tip.hidden = true; };
       plot.appendChild(col);
-    }
-    wrap.appendChild(plot);
+    });
+    plot.appendChild(tip);
+    wrap.append(yaxis, plot);
     return wrap;
   }
 
@@ -214,6 +258,20 @@
         'Počet odeslaných zpráv za den.');
       s3.appendChild(bars(items, {unit: ' zpráv'}));
       body.appendChild(s3);
+
+      // Dnes a včera vedle sebe, pod nimi tokeny po dnech.
+      const iso = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+      const dnes = new Date(), vcera = new Date(Date.now() - 864e5);
+      const najdi = (k) => days.find((d) => d.day === k) || {prompts: 0, out: 0};
+      const a = najdi(iso(dnes)), b = najdi(iso(vcera));
+      const sd = section('Denní přehled', 'Dnes a včera, pak napsané tokeny za každý den.');
+      const tiles = el('div', 'st-tiles');
+      tiles.appendChild(tile(String(a.prompts), 'zpráv dnes', cislo(a.out) + ' tokenů'));
+      tiles.appendChild(tile(String(b.prompts), 'zpráv včera', cislo(b.out) + ' tokenů'));
+      sd.appendChild(tiles);
+      sd.appendChild(bars(days.map((d) => ({value: d.out || 0, label: d.day, full: d.day})),
+        {unit: ' tokenů'}));
+      body.appendChild(sd);
     }
 
     // ── projekty ─────────────────────────────────────────────────────────

@@ -1,0 +1,23 @@
+/* Kompaktní — barvy výchozí, mění se jen rozložení. Na telefonu (≤ 820 px)
+   zůstává všechno, jak je: řádky tam musí unést palec. */
+:root {
+  --sidebar-w: 250px;
+  --bar-w: 160px;
+  --radius: 6px;
+  --radius-lg: 9px;
+}
+@media (min-width: 821px) {
+  .topbar { height: 34px; }
+  .side-nav { padding: 6px 6px 2px; }
+  .nav-item { padding: 5px 9px; font-size: 13px; gap: 8px; }
+  .section { margin: 10px 12px 3px; }
+  .sidebar > .section:first-child { margin-top: 8px; }
+  .card { margin: 0 6px; padding: 3px 9px; gap: 8px; }
+  .card-name { font-size: 12.5px; }
+  .card-meta { font-size: 9.5px; }
+  /* body:not(.pokrocile) .chat-item má v hub.css vyšší specifičnost. */
+  .chat-item, body:not(.pokrocile) .chat-item { margin: 0 6px; padding: 4px 9px; gap: 1px; }
+  .chat-title { font-size: 12.5px; }
+  .actionbar { padding: 10px 8px; }
+  .barbtn { padding-top: 5px; padding-bottom: 5px; }
+}

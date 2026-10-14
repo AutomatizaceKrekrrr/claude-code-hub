@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- Claude Code Hub — značka.
-     Kreslí to, co aplikace je: sloupec projektů vlevo, terminál vpravo.
-     Počítáno na 16 px: v té velikosti zbydou tři čárky a prompt, což pořád
-     drží tvar. Žádný text — ten se v liště úloh stejně slije. -->
+<!-- Paluba — značka.
+     Loďka z promptu: plachta je „>“, stěžeň tenká čára, trup je kurzor „_“.
+     Počítáno na 16 px: v té velikosti zbyde chevron nad pruhem, což pořád
+     drží tvar lodi. Žádný text — ten se v liště úloh stejně slije.
+     Stěžeň má plnou barvu: gradient na svislé čáře nefunguje (bbox má
+     nulovou šířku, takže by se nekreslila vůbec). -->
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
   <defs>
     <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
@@ -19,15 +21,15 @@
   <rect x="1.5" y="1.5" width="253" height="253" rx="54.5"
         fill="none" stroke="#e0843c" stroke-opacity=".28" stroke-width="3"/>
 
-  <!-- sloupec projektů -->
-  <g fill="url(#amber)">
-    <rect x="40" y="78"  width="34" height="15" rx="7.5"/>
-    <rect x="40" y="120" width="34" height="15" rx="7.5" opacity=".72"/>
-    <rect x="40" y="162" width="34" height="15" rx="7.5" opacity=".46"/>
-  </g>
+  <!-- plachta: prompt „>“ -->
+  <path d="M96 52 L160 108 L96 164" fill="none" stroke="url(#amber)"
+        stroke-width="20" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <!-- terminál: prompt a kurzor -->
-  <path d="M108 98 L140 128 L108 158" fill="none" stroke="url(#amber)"
-        stroke-width="19" stroke-linecap="round" stroke-linejoin="round"/>
-  <rect x="156" y="145" width="60" height="16" rx="8" fill="url(#amber)"/>
+  <!-- stěžeň -->
+  <path d="M96 52 V164" stroke="#e8893f" stroke-width="8"
+        stroke-linecap="round" opacity=".45"/>
+
+  <!-- trup: kurzor „_“ -->
+  <path d="M48 182 H208 L192 206 Q188 212 180 212 H76 Q68 212 64 206 Z"
+        fill="url(#amber)"/>
 </svg>

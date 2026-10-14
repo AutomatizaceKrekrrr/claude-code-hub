@@ -1,0 +1,14 @@
+/* Papír — konverzace ve čtení (hub/static/cteni.js) patkovým písmem.
+   Jen písmo: terminál (xterm) má vlastní font a kód zůstává neproporcionální. */
+:root {
+  --font-cteni: Charter, "Bitstream Charter", "Iowan Old Style", "Source Serif 4", "Source Serif Pro",
+                Georgia, "Noto Serif", "DejaVu Serif", serif;
+}
+.cteni-say, .cteni-bubble {
+  font-family: var(--font-cteni);
+}
+.cteni-say { font-size: 15px; line-height: 1.65; }
+.cteni-bubble { font-size: 14.5px; }
+.cteni-say code, .cteni-say pre, .cteni-say kbd, .cteni-say samp {
+  font-family: ui-monospace, "Cascadia Mono", monospace;
+}

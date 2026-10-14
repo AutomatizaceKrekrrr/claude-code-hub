@@ -126,7 +126,7 @@ def _open_webkit(url, versions):
     # prgname is what Wayland/X11 map to claude-code-hub.desktop, which is where
     # the window gets its icon and its place in the dock.
     GLib.set_prgname("claude-code-hub")
-    GLib.set_application_name("Claude Code Hub")
+    GLib.set_application_name("Paluba")
 
     view = WebKit.WebView()
     view.load_uri(url)
@@ -207,13 +207,13 @@ def _follow_app(view, holder):
 
 
 def _app_title():
-    """Vlastní název appky (Nastavení → Vzhled), jinak Claude Code Hub."""
+    """Vlastní název appky (Nastavení → Vzhled), jinak Paluba."""
     try:
         from . import vzhled
         vzhled.sync_desktop()      # instalace spouštěč přepisuje na výchozí
         return vzhled.zobrazeny()
     except Exception:
-        return "Claude Code Hub"
+        return "Paluba"
 
 
 def _app_icon():

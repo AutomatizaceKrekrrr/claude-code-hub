@@ -1,0 +1,27 @@
+{
+  "name": "Námořní",
+  "version": "1.0.0",
+  "description": "Tmavě námořnická modř s mosazným akcentem, ve světlém režimu modrobílá paluba. Trochu ostřejší rohy.",
+  "author": "Paluba",
+  "nahled": ["#0b1a2b", "#132a42", "#d4a24c", "#eef3f8"],
+  "barvy": {
+    "dark": {
+      "AMBER": "#d4a24c", "BG": "#0b1a2b", "BG_SIDEBAR": "#0f2236", "BG_CARD": "#132a42",
+      "FG": "#c9d4e0", "FG_BRIGHT": "#eef3f8", "DIM": "#8197ad", "GREEN": "#4cb782",
+      "RED": "#e5534b", "CARD_HOVER": "#1a3452", "BORDER": "#22405f", "SECTION": "#5f7790",
+      "CLOUD": "#5aa0e8", "FIRMA": "#a98bf0", "CHART": "#d4a24c", "CHART_CLOUD": "#5aa0e8",
+      "TERM_PALETTE": [
+        "#132a42", "#e5534b", "#4cb782", "#d4a24c", "#5aa0e8", "#b083e0",
+        "#4fc1c9", "#c9d4e0", "#3d5670", "#ff6b62", "#6fd39c", "#f0c06a",
+        "#7fb8f2", "#c9a3f0", "#76d9df", "#f4f7fa"
+      ]
+    },
+    "light": {
+      "AMBER": "#a8761c", "BG": "#f7f9fc", "BG_SIDEBAR": "#eaf0f6", "BG_CARD": "#ffffff",
+      "FG": "#1c2b3a", "FG_BRIGHT": "#0b1a2b", "DIM": "#5a6b7d", "GREEN": "#1f7a4d",
+      "RED": "#c4302b", "CARD_HOVER": "#dde6f0", "BORDER": "#c6d3e0", "SECTION": "#8293a5",
+      "CLOUD": "#1d5fae", "FIRMA": "#7048c4", "CHART": "#a8761c", "CHART_CLOUD": "#1d5fae"
+    }
+  },
+  "style": "motiv.css"
+}

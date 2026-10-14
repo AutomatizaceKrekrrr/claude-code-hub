@@ -49,7 +49,7 @@
     svg.setAttribute('width', size);
     svg.setAttribute('height', size);
     const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-    use.setAttribute('href', '#i-hub');
+    use.setAttribute('href', '#i-paluba');
     svg.appendChild(use);
     return svg;
   }
@@ -125,7 +125,7 @@
 
   /* ── kroky ──────────────────────────────────────────────────────────────── */
   function vitej(box) {
-    head('Claude Hub', 'Chvilka nastavení a pak už jen práce.');
+    head('Paluba', 'Chvilka nastavení a pak už jen práce.');
 
     // Kde se bude pracovat — rozhoduje o celém zbytku, tak je to první otázka.
     if (!chosen.onServer) {

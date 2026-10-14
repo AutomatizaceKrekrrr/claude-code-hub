@@ -16,7 +16,7 @@ import re
 
 from . import core
 
-VYCHOZI = "Claude Code Hub"
+VYCHOZI = "Paluba"
 VELIKOSTI = (512, 192, 32)
 MAX_IKONA = 2 * 1024 * 1024
 MAX_NAZEV = 40
@@ -64,11 +64,11 @@ def uloz(name=None, icons=None, reset=False):
                 os.remove(p)
         core.save_config({"app_name": ""})
         sync_desktop()
-    try:
-        from . import pozadi
-        pozadi.ikonka_znovu()
-    except Exception:
-        pass
+        try:
+            from . import pozadi
+            pozadi.ikonka_znovu()
+        except Exception:
+            pass
         return stav()
     if name is not None:
         clean = re.sub(r"[\x00-\x1f\x7f]", "", str(name)).strip()
@@ -126,12 +126,12 @@ def uprav_stranku(page):
     name = html.escape(zobrazeny())
     a = adresy()
     v = verze()
-    text = text.replace("<title>Claude Code Hub</title>", f"<title>{name}</title>", 1)
+    text = text.replace("<title>Paluba</title>", f"<title>{name}</title>", 1)
     text = text.replace('<link rel="manifest" href="/manifest.webmanifest">',
                         f'<link rel="manifest" href="{html.escape(a["manifest"])}">', 1)
     text = text.replace('<link rel="apple-touch-icon" href="/icon-192.png">',
                         f'<link rel="apple-touch-icon" href="{html.escape(a["touch"])}">', 1)
-    text = text.replace('<meta name="apple-mobile-web-app-title" content="Claude Hub">',
+    text = text.replace('<meta name="apple-mobile-web-app-title" content="Paluba">',
                         f'<meta name="apple-mobile-web-app-title" content="{name}">', 1)
     if v:
         text = text.replace('href="/icon-32.png"', f'href="/app-ikona/32.png?v={v}"', 1)

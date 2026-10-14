@@ -663,9 +663,321 @@
     return wrap;
   }
 
+  /* ── Paluba Market: motivy, katalog Paluby, přibalené skilly ───────────
+     Tyhle části volá Nastavení (settings.js) a podává jim `opts` z okna:
+     {setMotiv, open, vychozi, poInstalaci} — io pluginů appky je nemá. */
+
+  /* Náhled motivu: pruhy jeho barev (`nahled` v motiv.json, pár hex barev). */
+  function nahledMotivu(barvy) {
+    const n = el('div', 'mtv-nahled');
+    const hex = (barvy || []).filter((b) => /^#[0-9a-f]{6}$/i.test(String(b))).slice(0, 6);
+    if (!hex.length) n.classList.add('prazdny');
+    for (const b of hex) {
+      const s = el('span');
+      s.style.background = b;
+      n.appendChild(s);
+    }
+    return n;
+  }
+
+  function kartaMotivu(m, zapnuty) {
+    const k = el('div', 'mtv-karta' + (zapnuty ? ' on' : '') + (m.error ? ' chyba' : ''));
+    k.appendChild(nahledMotivu(m.nahled));
+    const text = el('div', 'mtv-text');
+    const hlava = el('div', 'mtv-nazev');
+    hlava.appendChild(el('b', '', m.name || m.id || 'Motiv'));
+    if (zapnuty) hlava.appendChild(el('span', 'mtv-stitek', 'Zapnutý'));
+    text.appendChild(hlava);
+    const meta = [m.author, m.version && 'v' + m.version].filter(Boolean).join(' · ');
+    if (meta) text.appendChild(el('div', 'mtv-meta', meta));
+    if (m.error) text.appendChild(el('div', 'mtv-popis set-warn', m.error));
+    else if (m.description) {
+      const d = el('div', 'mtv-popis', m.description);
+      d.title = m.description;
+      text.appendChild(d);
+    }
+    k.appendChild(text);
+    const btns = el('div', 'mtv-btns');
+    k.appendChild(btns);
+    return {k, btns};
+  }
+
+  /* Zapne motiv (id '' = výchozí vzhled) a hned ho ukáže v okně. */
+  async function zapniMotiv(id, opts) {
+    const r = await io.api('pluginy', {akce: 'motiv-nastav', id});
+    if (r.ok === false) throw new Error(r.message || r.error || 'Motiv se nezapnul.');
+    if (opts && opts.setMotiv) opts.setMotiv(r.motiv || {id: ''});
+    else location.reload();            // starší okno bez setMotiv — aspoň obnovit
+    return r;
+  }
+
+  /* Moje motivy: mřížka karet, klik = zapnout. */
+  function motivy(opts) {
+    opts = opts || {};
+    const wrap = el('div');
+    wrap.appendChild(el('div', 'set-note',
+      'Motiv mění barvy okna i terminálu, písmo a rozložení. Přepne se hned, bez obnovení okna.'));
+    const stav = el('div', 'set-note', 'Načítám motivy…');
+    const mrizka = el('div', 'mtv-mrizka');
+    const dole = el('div');
+    wrap.append(stav, mrizka, dole);
+    let data = null, pracuje = false;
+
+    async function nastav(id) {
+      if (pracuje || !data || data.aktivni === id) return;
+      pracuje = true;
+      mrizka.classList.add('pracuje');
+      try {
+        await zapniMotiv(id, opts);
+        data.aktivni = id;
+        for (const m of data.motivy || []) m.aktivni = m.id === id;
+        kresli();
+      } catch (err) {
+        io.toast(err.message || 'Nepovedlo se.');
+      } finally {
+        pracuje = false;
+        mrizka.classList.remove('pracuje');
+      }
+    }
+
+    async function akce(body) {
+      try {
+        const out = await io.api('pluginy', body);
+        if (out.ok === false) throw new Error(out.message || out.error || 'Nepovedlo se.');
+        if (out.message) io.toast(out.message);
+        const driv = data && data.aktivni;
+        if (out.motivy) data = out.motivy;
+        // Odebraný motiv byl zapnutý → okno se vrátí k výchozímu vzhledu.
+        if (driv && data && !data.aktivni && opts.setMotiv) opts.setMotiv({id: ''});
+        kresli();
+        return out;
+      } catch (err) {
+        io.toast(err.message || 'Nepovedlo se.');
+        return null;
+      }
+    }
+
+    function karta(m, zapnuty) {
+      const {k, btns} = kartaMotivu(m, zapnuty);
+      if (!m.error) {
+        k.classList.add('plg-klik');
+        k.tabIndex = 0;
+        k.setAttribute('role', 'button');
+        k.title = zapnuty ? 'Tenhle motiv je zapnutý' : 'Zapnout motiv';
+        k.onclick = () => nastav(m.id);
+        k.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); nastav(m.id); } };
+      }
+      if (m.vlastni) {
+        const del = tlacitko('Odebrat', async () => {
+          if (await HubDialog.confirm('Odebrat motiv „' + (m.name || m.id) + '“ i s jeho soubory?',
+                                      {title: 'Odebrat motiv', ok: 'Odebrat'})) {
+            await akce({akce: 'motiv-odeber', id: m.id});
+          }
+        }, 'danger');
+        del.addEventListener('click', (ev) => ev.stopPropagation());
+        btns.appendChild(del);
+      }
+      return k;
+    }
+
+    function kresli() {
+      mrizka.textContent = '';
+      dole.textContent = '';
+      const aktivni = (data && data.aktivni) || '';
+      mrizka.appendChild(karta({id: '', name: 'Výchozí (Paluba)', author: 'Paluba',
+                                description: 'Původní vzhled Paluby — jantarová na počítači, modrá na serveru.',
+                                nahled: opts.vychozi || []}, !aktivni));
+      for (const m of (data && data.motivy) || []) mrizka.appendChild(karta(m, !!aktivni && m.id === aktivni));
+
+      dole.appendChild(el('div', 'set-title plg-podnadpis', 'Přidat motiv'));
+      const row = el('div', 'set-row');
+      const adresa = el('input', 'set-input');
+      adresa.placeholder = 'GitHub owner/repo nebo https://… adresa repozitáře';
+      row.append(adresa, tlacitko('Přidat z gitu', () => adresa.value.trim() && akce({akce: 'motiv-pridej', url: adresa.value.trim()})));
+      dole.appendChild(row);
+      const pro = el('div', 'set-note mtv-autori');
+      pro.textContent = 'Pro autory: motiv je složka' + (data && data.dir ? ' v ' + data.dir : '') +
+        ' s motiv.json — name, version, description, author, nahled (pár hex barev na kartu) a barvy ' +
+        '{dark, light} s klíči palety: AMBER, BG, BG_SIDEBAR, BG_CARD, FG, FG_BRIGHT, DIM, GREEN, RED, ' +
+        'CARD_HOVER, BORDER, SECTION, CLOUD, FIRMA, CHART a TERM_PALETTE (16 barev terminálu). ' +
+        'Co v motivu chybí, zůstane výchozí. Fonty a rozložení patří do CSS: "style": "motiv.css".';
+      dole.appendChild(pro);
+    }
+
+    io.api('pluginy?jen=motivy').then((d) => {
+      data = d || {};
+      stav.hidden = true;
+      kresli();
+    }, (err) => {
+      stav.className = 'set-warn';
+      stav.textContent = 'Motivy se nenačetly: ' + err.message;
+      data = {motivy: [], aktivni: ''};
+      kresli();
+    });
+    return wrap;
+  }
+
+  /* Objevit v Paluba Marketu: katalog pluginů a motivů Paluby (hub/market.py). */
+  function market(druh, opts) {
+    opts = opts || {};
+    const jeMotiv = druh === 'motivy';
+    const wrap = el('div');
+    wrap.appendChild(el('div', 'set-note', jeMotiv
+      ? 'Motivy z katalogu Paluby — barvy, písmo a rozložení okna. Po instalaci ho jedním klikem zapneš.'
+      : 'Pluginy z katalogu Paluby. Po instalaci je plugin vypnutý — zapneš ho v záložce Moje, až budeš vědět, co dělá.'));
+    const stav = el('div', 'set-note', 'Načítám katalog…');
+    const obsah = el('div', jeMotiv ? 'mtv-mrizka' : 'plg-seznam');
+    const pata = el('div', 'set-row mkt-pata');
+    wrap.append(stav, obsah, pata);
+    let data = null;
+    const zapnute = new Set();          // motivy zapnuté odsud (katalog stav nezná)
+
+    async function nacti(obnovit) {
+      stav.hidden = false;
+      stav.className = 'set-note';
+      stav.textContent = obnovit ? 'Stahuju katalog znovu…' : 'Načítám katalog…';
+      obsah.textContent = '';
+      pata.textContent = '';
+      try { data = await io.api('pluginy?jen=market' + (obnovit ? '&refresh=1' : '')); }
+      catch (err) { data = {ok: false, error: err.message}; }
+      kresli();
+    }
+
+    async function instaluj(x) {
+      try {
+        const out = await io.api('pluginy', {akce: 'market-instaluj', druh, id: x.id});
+        if (out.ok === false) throw new Error(out.message || out.error || 'Nepovedlo se.');
+        x.installed = true;
+        if (out.appka) zakladni = {...zakladni, plugins: out.appka.plugins, allowed: out.appka.allowed, dir: out.appka.dir};
+        io.toast(out.message || (jeMotiv ? 'Motiv „' + (x.name || x.id) + '“ je nainstalovaný.'
+                                         : 'Plugin „' + (x.name || x.id) + '“ je nainstalovaný — zapneš ho v záložce Moje.'));
+        kresli();
+      } catch (err) {
+        io.toast(err.message || 'Nepovedlo se.');
+      }
+    }
+
+    function kresli() {
+      obsah.textContent = '';
+      pata.textContent = '';
+      if (!data || data.ok === false) {
+        stav.hidden = false;
+        stav.className = 'set-warn';
+        stav.textContent = 'Katalog se nenačetl: ' + ((data && data.error) || 'neznámá chyba');
+        pata.appendChild(tlacitko('Zkusit znovu', () => nacti(true), 'primary'));
+        return;
+      }
+      const polozky = (jeMotiv ? data.motivy : data.pluginy) || [];
+      stav.className = 'set-note';
+      stav.hidden = !!polozky.length;
+      stav.textContent = jeMotiv ? 'V katalogu zatím žádné motivy nejsou.' : 'V katalogu zatím žádné pluginy nejsou.';
+      polozky.forEach((x, i) => {
+        let radka, btns;
+        if (jeMotiv) {
+          ({k: radka, btns} = kartaMotivu(x, zapnute.has(x.id)));
+        } else {
+          ({r: radka, tlacitka: btns} = radek(x.name || x.id, x.description,
+            [x.version && 'v' + x.version, x.author].filter(Boolean).join(' · '), 'i-plus'));
+        }
+        radka.classList.add('plg-vstup');
+        radka.style.animationDelay = Math.min(i, 20) * 30 + 'ms';
+        if (!x.installed) {
+          btns.appendChild(tlacitko('Nainstalovat', () => instaluj(x), 'primary'));
+        } else {
+          btns.appendChild(el('span', 'set-ok', '✓ Nainstalováno'));
+          if (jeMotiv && !zapnute.has(x.id)) {
+            btns.appendChild(tlacitko('Zapnout', async () => {
+              try {
+                await zapniMotiv(x.id, opts);
+                zapnute.clear();
+                zapnute.add(x.id);
+                io.toast('Motiv „' + (x.name || x.id) + '“ je zapnutý.');
+                kresli();
+              } catch (err) { io.toast(err.message || 'Nepovedlo se.'); }
+            }, 'primary'));
+          } else if (!jeMotiv && opts.poInstalaci) {
+            btns.appendChild(tlacitko('Zapnout v Moje', () => opts.poInstalaci()));
+          }
+        }
+        obsah.appendChild(radka);
+      });
+      if (data.repo) {
+        pata.appendChild(el('span', 'set-note', 'Katalog: ' + data.repo));
+        if (opts.open) pata.appendChild(tlacitko('Otevřít na GitHubu', () => opts.open('https://github.com/' + data.repo)));
+      }
+      pata.appendChild(tlacitko('Obnovit katalog', () => nacti(true)));
+    }
+
+    nacti(false);
+    return wrap;
+  }
+
+  /* Skilly, které Paluba přibaluje (hub/skills): po instalaci jsou v Claude
+     Code jako /příkaz. Některé potřebují Obsidian vault. */
+  function palubaSkilly() {
+    const wrap = el('div');
+    wrap.appendChild(el('div', 'set-note',
+      'Skilly, které Paluba přibaluje (/deploy, /audit, /screenshot…). Po instalaci je máš v Claude Code ' +
+      'jako /příkaz — v chatu napíšeš třeba /deploy.'));
+    const stav = el('div', 'set-note', 'Načítám skilly…');
+    const seznam = el('div', 'plg-seznam');
+    wrap.append(stav, seznam);
+    let skills = [];
+
+    async function akce(body) {
+      try {
+        const out = await io.api('pluginy', body);
+        if (out.ok === false) throw new Error(out.message || out.error || 'Nepovedlo se.');
+        if (out.message) io.toast(out.message);
+        if (out.skills) skills = out.skills;
+        kresli();
+      } catch (err) {
+        io.toast(err.message || 'Nepovedlo se.');
+      }
+    }
+
+    function kresli() {
+      seznam.textContent = '';
+      stav.hidden = !!skills.length;
+      if (!skills.length) stav.textContent = 'Paluba žádné skilly nepřibaluje.';
+      skills.forEach((x, i) => {
+        const bezVaultu = x.vault && !x.available;
+        const meta = [x.installed ? 'nainstalovaný' : '', bezVaultu ? 'potřebuje Obsidian vault' : x.vault ? 'pracuje s Obsidian vaultem' : '']
+          .filter(Boolean).join(' · ');
+        const {r, tlacitka} = radek('/' + x.name, x.description, meta, 'i-bolt');
+        r.classList.add('plg-vstup');
+        r.style.animationDelay = Math.min(i, 20) * 30 + 'ms';
+        if (bezVaultu && !x.installed) {
+          r.classList.add('plg-zasedle');
+          r.title = 'Tenhle skill pracuje s Obsidian vaultem — nejdřív si ho nastav (Nastavení → Paměť).';
+        } else if (x.installed) {
+          tlacitka.appendChild(tlacitko('Odebrat', async () => {
+            if (await HubDialog.confirm('Odebrat skill /' + x.name + '? Příkaz pak v Claude Code nebude.',
+                                        {title: 'Odebrat skill', ok: 'Odebrat'})) {
+              await akce({akce: 'skill-odeber', name: x.name});
+            }
+          }, 'danger'));
+        } else {
+          tlacitka.appendChild(tlacitko('Nainstalovat', () => akce({akce: 'skill-instaluj', name: x.name}), 'primary'));
+        }
+        seznam.appendChild(r);
+      });
+    }
+
+    io.api('pluginy?jen=paluba-skilly').then((d) => {
+      skills = (d && d.skills) || [];
+      kresli();
+    }, (err) => {
+      stav.className = 'set-warn';
+      stav.textContent = 'Skilly se nenačetly: ' + err.message;
+    });
+    return wrap;
+  }
+
   global.HubPluginy = {
     start, registruj, sekce, ikonka, logoZUrl,
     claudeCode, skilly, appka, katalogNapojeni,
+    motivy, market, palubaSkilly,
     akce: () => akceSeznam.slice(),
   };
 })(window);

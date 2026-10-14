@@ -409,7 +409,7 @@ objeví po jeho dalším startu**; `claude-hub-admin stop <e-mail>` to uspíší
 
 Instalačka je zavádí sama (`setup_company_skills`) a při dalším běhu
 aktualizuje; nahrané z vlastní složky nechá být. Zdroj je
-`jurapascal/claude-brain-skills`, přebije ho `HUB_SKILLS_REPO`. Přepsat je
+`jurapascal/paluba-market`, přebije ho `HUB_SKILLS_REPO`. Přepsat je
 `skills install --force` — co tam bylo, se odloží vedle trezoru jako
 `_skilly-<čas>`.
 

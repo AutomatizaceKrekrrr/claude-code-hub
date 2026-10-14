@@ -242,7 +242,7 @@ def report_bundle():
     import datetime
     info = doctor()
     head = [
-        "Claude Code Hub — hlášení",
+        "Paluba — hlášení",
         f"pořízeno   {datetime.datetime.now():%Y-%m-%d %H:%M:%S}",
         f"verze      {version()}",
         "",
@@ -3094,7 +3094,7 @@ SESSION_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 # Pokyn pro firemní tab. Souhlas se zápisem dal uživatel tím, že tab otevřel —
 # platí ale jen na to, o co si v té konverzaci řekne: osobní poznámky, přístupy
 # ani nastavení napojení do společného trezoru nepatří.
-FIRMA_TAB_PROMPT = """Jsi ve firemním tabu Claude Code Hubu (HUB_VAULT=firma).
+FIRMA_TAB_PROMPT = """Jsi ve firemním tabu Paluby (HUB_VAULT=firma).
 
 - Pracuješ nad **firemním Obsidianem** celého týmu: čti z něj a nové poznámky do
   něj posílej příkazem `python3 {tool} navrh "cesta/nazev.md" - ` (obsah na

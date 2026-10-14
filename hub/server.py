@@ -33,7 +33,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from . import (account, automodel, chats, clockify, connect, core, cteni, jev, pocitac, predplatne,
+from . import (account, automodel, chats, clockify, connect, core, cteni, jev, motivy, pocitac, predplatne,
                pozadi, prenos, prenos_hub, prohlizec, pty_backend, qr, remote, restart, setup, stats, vzhled)
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -47,12 +47,12 @@ COOKIE_MAX_AGE = 60 * 60 * 24 * 365
 # 403 there looks like the hub is broken.
 PAIR_AGAIN = """<!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
-<title>Claude Code Hub</title>
+<title>Paluba</title>
 <style>body{font:16px/1.6 system-ui,sans-serif;margin:0;min-height:100vh;
 display:grid;place-items:center;background:#16150f;color:#e8e3d3;padding:24px}
 div{max-width:22rem;text-align:center}b{color:#e0a458}</style>
 <div><p><b>Telefon už není spárovaný.</b></p>
-<p>Otevři na počítači Claude Code Hub → Nastavení → Telefon a načti QR kód znovu.</p></div>
+<p>Otevři na počítači Palubu → Nastavení → Telefon a načti QR kód znovu.</p></div>
 """
 
 
@@ -857,6 +857,8 @@ class Handler(BaseHTTPRequestHandler):
                 "default_agent": core.default_agent(),
                 "model": core.current_model(),
                 "palette": {"dark": core.DARK, "light": core.LIGHT},
+                # Zapnutý motiv (hub/motivy.py): přepsaná paleta a styl navíc.
+                "motiv": part("motiv", motivy.data, {"id": ""}),
                 "doctor": core.doctor(),
                 "user": os.environ.get("USER") or os.environ.get("USERNAME") or "",
                 "obsidian": core.has_obsidian(),
@@ -1351,6 +1353,33 @@ class Handler(BaseHTTPRequestHandler):
             if not co and (query.get("jen") or [""])[0] == "skill":
                 return self._json(pluginy.skill_detail((query.get("zdroj") or [""])[0], (query.get("name") or [""])[0],
                                                        (query.get("kde") or [""])[0]))
+            # Paluba Market (hub/market.py): motivy, katalog z GitHubu, skilly Paluby.
+            if not co and (query.get("jen") or [""])[0] == "motivy":
+                return self._json(motivy.seznam())
+            if not co and (query.get("jen") or [""])[0] == "market":
+                from . import market
+                return self._json(market.katalog(bool(query.get("refresh"))))
+            if not co and (query.get("jen") or [""])[0] == "paluba-skilly":
+                from . import market
+                return self._json(market.skilly_paluby())
+            if co.startswith(("motiv-", "market-", "skill-")):
+                from . import market
+                if co == "motiv-nastav":
+                    out = motivy.nastav(payload.get("id", ""))
+                elif co in ("motiv-pridej", "motiv-odeber"):
+                    out = (motivy.pridej(payload.get("url", "")) if co == "motiv-pridej"
+                           else motivy.odeber(payload.get("id", "")))
+                    out = {**out, "motivy": motivy.seznam()}
+                elif co == "market-instaluj":
+                    out = market.instaluj(payload.get("druh", ""), payload.get("id", ""))
+                    out = {**out, "appka": pluginy.appka_seznam(), "motivy": motivy.seznam()}
+                elif co in ("skill-instaluj", "skill-odeber"):
+                    out = (market.skill_instaluj if co == "skill-instaluj" else market.skill_odeber)(
+                        payload.get("name", ""))
+                    out = {**out, **market.skilly_paluby()}
+                else:
+                    return self._json({"ok": False, "message": "Neznámá akce."}, 400)
+                return self._json(out, 200 if out.get("ok") else 400)
             if not co:
                 obnovit = bool(query.get("refresh"))
                 return self._json({"cc": pluginy.katalog(obnovit), "appka": pluginy.appka_seznam()})
@@ -1408,6 +1437,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(404, b"404")
             with open(hit[0], "rb") as fh:
                 return self._send(200, fh.read(), hit[1])
+        if name == "motiv-soubor":
+            # Styl motivu a co si z něj bere (fonty, obrázky) — jen s tokenem.
+            hit = motivy.soubor((query.get("id") or [""])[0], (query.get("f") or [""])[0])
+            if not hit:
+                return self._send(404, b"404")
+            with open(hit[0], "rb") as fh:
+                return self._send(200, fh.read(), hit[1], {"Cache-Control": "private, max-age=3600"})
         if name == "connect":
             # Služby pro člověka — Freelo, Canva, Ecomail, Google, i více účtů
             # (hub/connect.py). Nad technickým katalogem /api/mcp.

@@ -1,6 +1,6 @@
 {
-  "name": "Claude Code Hub",
-  "short_name": "Hub",
+  "name": "Paluba",
+  "short_name": "Paluba",
   "description": "Projekty a běžící Claude Code session z počítače, v telefonu.",
   "start_url": "/",
   "scope": "/",

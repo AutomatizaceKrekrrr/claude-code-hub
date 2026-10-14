@@ -252,7 +252,7 @@
     const jmeno = el('input', 'set-input app-name');
     jmeno.type = 'text';
     jmeno.maxLength = 40;
-    jmeno.placeholder = app.default || 'Claude Code Hub';
+    jmeno.placeholder = app.default || 'Paluba';
     jmeno.value = app.name || '';
     radek.append(nahled, jmeno);
     box.appendChild(radek);
@@ -1283,8 +1283,9 @@
   /* Služby — karta na službu, pod ní účty (hub/connect.py). Pro člověka, který
      chce „napojit Freelo", ne registrovat MCP server: popisek účtu, Přihlásit,
      a na serveru vložit adresu, kam přihlášení přesměrovalo. Víc účtů u jedné
-     služby je normální (firma, osobní). */
-  function sluzby(onData) {
+     služby je normální (firma, osobní). `filtr` vybere, které karty se
+     ukážou (WhatsApp patří do Paluba Marketu, ostatní do Claude Code). */
+  function sluzby(onData, filtr) {
     const wrap = el('div', 'svc-list');
     wrap.appendChild(el('div', 'set-dim', 'Načítám služby…'));
     let data = null;
@@ -1319,7 +1320,7 @@
 
     function draw() {
       wrap.textContent = '';
-      for (const svc of data.services || []) wrap.appendChild(card(svc));
+      for (const svc of (data.services || []).filter(filtr || (() => true))) wrap.appendChild(card(svc));
     }
 
     function field(parent, label, placeholder, help) {
@@ -1928,46 +1929,118 @@
     return wrap;
   }
 
-  /* Napojení a pluginy: jedna sekce se záložkami. Co do které patří:
-       Služby (Freelo, Google… naklikáním), Pluginy Claude Code (katalog),
-       Skilly (co Claude umí — moje příkazy, z pluginů, z Obsidianu),
-       MCP servery (všechna napojení technicky, se stavem) a Pro appku. */
-  const ROZ_TABS = [
-    ['skilly', 'Skilly', 'i-book'], ['konektory', 'Konektory (MCP)', 'i-hub'],
-    ['pluginy', 'Pluginy', 'i-plus'], ['appka', 'Pro appku', 'i-gear'],
-  ];
+  /* Napojení a pluginy: dva obchody vedle sebe.
+       Claude Code Marketplace — co rozšiřuje Clauda: pluginy (katalog),
+         MCP (služby a napojení) a skilly (moje příkazy, z pluginů, z Obsidianu).
+       Paluba Market — co rozšiřuje samotnou appku: pluginy appky, motivy,
+         napojení, která Paluba přináší (WhatsApp, prohlížeč…), a přibalené skilly.
+     Záložka s Moje | Objevit má u sebe přepínač; volba se pamatuje. */
+  const TRHY = {
+    cc: {
+      nazev: 'Claude Code Marketplace', pod: 'Pluginy, MCP a skilly pro Claude Code', ico: 'i-terminal',
+      tabs: [['pluginy', 'Pluginy', 'i-plus', true], ['mcp', 'MCP', 'i-hub', true], ['skilly', 'Skilly', 'i-book', false]],
+    },
+    paluba: {
+      nazev: 'Paluba Market', pod: 'Pluginy, motivy, MCP a skilly pro Palubu', ico: 'i-paluba',
+      tabs: [['pluginy', 'Pluginy', 'i-plus', true], ['motivy', 'Motivy', 'i-sun', true],
+             ['mcp', 'MCP', 'i-hub', false], ['skilly', 'Skilly', 'i-bolt', false]],
+    },
+  };
+  const ROZ_STARE = {skilly: ['cc', 'skilly'], konektory: ['cc', 'mcp'], pluginy: ['cc', 'pluginy'], appka: ['paluba', 'pluginy']};
+
   function rozsireni() {
     const box = section('Napojení a pluginy',
-      'Jako Přizpůsobení v claude.ai: skilly (co Claude umí), konektory (služby) a pluginy.');
+      'Claude Code Marketplace rozšiřuje Clauda — pluginy, napojení na služby a skilly. ' +
+      'Paluba Market rozšiřuje samotnou appku — pluginy, motivy vzhledu a to, co Paluba přináší sama.');
+    const uloz = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { /* soukromé okno */ } };
+    const cti = (k) => { try { return localStorage.getItem(k) || ''; } catch (_) { return ''; } };
+    // Záložky z doby před dvěma obchody (hub-roz-tab) se převezmou jednou.
+    const stara = ROZ_STARE[cti('hub-roz-tab')];
+    if (stara && !cti('hub-roz-trh')) {
+      uloz('hub-roz-trh', stara[0]);
+      uloz('hub-roz-tab-' + stara[0], stara[1]);
+      try { localStorage.removeItem('hub-roz-tab'); } catch (_) { /* nic */ }
+    }
+    let trh = TRHY[cti('hub-roz-trh')] ? cti('hub-roz-trh') : 'cc';
+    const kdeV = (t) => {
+      const k = cti('hub-roz-tab-' + t);
+      return TRHY[t].tabs.some(([id]) => id === k) ? k : TRHY[t].tabs[0][0];
+    };
+    let kde = kdeV(trh);
+    let cim = cti('hub-roz-cim') === 'objevit' ? 'objevit' : 'moje';
+    const P = window.HubPluginy;
+
+    const volba = el('div', 'trh-volba');
     const tabs = el('div', 'plg-tabs roz-tabs');
     const prepinac = el('div', 'plg-tabs roz-moje');       // Moje | Objevit
     const telo = el('div', 'roz-telo');
-    let kde = localStorage.getItem('hub-roz-tab') || 'skilly';
-    if (!ROZ_TABS.some(([id]) => id === kde)) kde = 'skilly';
-    let cim = localStorage.getItem('hub-roz-cim') === 'objevit' ? 'objevit' : 'moje';
-    const P = window.HubPluginy;
-    const uloz = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { /* soukromé okno */ } };
-    const kresli = () => {
+    const ikona = (ico) => (document.getElementById(ico) ? ico : 'i-hub');
+
+    for (const [id, t] of Object.entries(TRHY)) {
+      const b = el('button', 'trh-karta');
+      b.type = 'button';
+      b.dataset.k = id;
+      b.innerHTML = '<span class="trh-ico"><svg class="ico"><use href="#' + ikona(t.ico) + '"/></svg></span>' +
+                    '<span class="trh-text"><b></b><small></small></span>';
+      b.querySelector('b').textContent = t.nazev;
+      b.querySelector('small').textContent = t.pod;
+      b.onclick = () => {
+        if (trh === id) return;
+        trh = id;
+        kde = kdeV(id);
+        uloz('hub-roz-trh', id);
+        zalozky();
+        kresli();
+      };
+      volba.appendChild(b);
+    }
+
+    const opts = () => ({
+      setMotiv: io.setMotiv, open: io.open,
+      vychozi: (() => {
+        const d = (state.palette && state.palette.dark) || {};
+        return [d.BG, d.BG_CARD, d.AMBER, d.CLOUD, d.FG_BRIGHT].filter(Boolean);
+      })(),
+      // Po instalaci pluginu z katalogu Paluby: zpátky do Moje, kde se zapíná.
+      poInstalaci: () => { const t = prepinac.querySelector('.plg-tab[data-k="moje"]'); if (t) t.click(); },
+    });
+
+    function obsah(objevit) {
+      if (trh === 'cc' && kde === 'mcp') return napojeni(objevit);
+      if (trh === 'paluba' && kde === 'mcp') return palubaMcp();
+      if (!P) return el('div', 'set-note', 'Načítám…');
+      if (trh === 'cc') return kde === 'pluginy' ? P.claudeCode(objevit ? 'objevit' : 'moje') : P.skilly();
+      if (!P.motivy) return el('div', 'set-note', 'Tahle část potřebuje obnovit okno (Ctrl+R).');
+      if (kde === 'pluginy') return objevit ? P.market('pluginy', opts()) : P.appka();
+      if (kde === 'motivy') return objevit ? P.market('motivy', opts()) : P.motivy(opts());
+      return P.palubaSkilly();
+    }
+
+    function zalozky() {
+      tabs.textContent = '';
+      for (const [id, text, ico] of TRHY[trh].tabs) {
+        const b = el('button', 'plg-tab');
+        b.innerHTML = '<svg class="ico"><use href="#' + ico + '"/></svg><span></span>';
+        b.querySelector('span').textContent = text;
+        b.dataset.k = id;
+        b.onclick = () => { kde = id; uloz('hub-roz-tab-' + trh, id); kresli(); };
+        tabs.appendChild(b);
+      }
+    }
+
+    function kresli() {
+      for (const b of volba.children) {
+        b.classList.toggle('on', b.dataset.k === trh);
+        b.setAttribute('aria-pressed', b.dataset.k === trh ? 'true' : 'false');
+      }
       for (const b of tabs.children) b.classList.toggle('on', b.dataset.k === kde);
-      const maObjevit = kde === 'konektory' || kde === 'pluginy';
+      const maObjevit = !!(TRHY[trh].tabs.find(([id]) => id === kde) || [])[3];
       prepinac.hidden = !maObjevit;
       for (const b of prepinac.children) b.classList.toggle('on', b.dataset.k === cim);
       telo.textContent = '';
-      const objevit = maObjevit && cim === 'objevit';
-      telo.appendChild(kde === 'konektory' ? napojeni(objevit)
-        : !P ? el('div', 'set-note', 'Načítám…')
-        : kde === 'pluginy' ? P.claudeCode(objevit ? 'objevit' : 'moje')
-        : kde === 'skilly' ? P.skilly()
-        : P.appka());
-    };
-    for (const [id, text, ico] of ROZ_TABS) {
-      const b = el('button', 'plg-tab');
-      b.innerHTML = '<svg class="ico"><use href="#' + ico + '"/></svg><span></span>';
-      b.querySelector('span').textContent = text;
-      b.dataset.k = id;
-      b.onclick = () => { kde = id; uloz('hub-roz-tab', id); kresli(); };
-      tabs.appendChild(b);
+      telo.appendChild(obsah(maObjevit && cim === 'objevit'));
     }
+
     for (const [id, text] of [['moje', 'Moje'], ['objevit', 'Objevit']]) {
       const b = el('button', 'plg-tab', text);
       b.dataset.k = id;
@@ -1976,8 +2049,84 @@
     }
     const hlava = el('div', 'roz-hlava');
     hlava.append(tabs, prepinac);
-    box.append(hlava, telo);
+    box.append(volba, hlava, telo);
+    zalozky();
     kresli();
+    return box;
+  }
+
+  /* Paluba Market → MCP: napojení, která přináší Paluba sama. WhatsApp
+     (karta služby z hub/connect.py) a „Součást appky" — prohlížeč, spojení
+     s počítačem a sdílená napojení od kolegů. Ty spravuje hub, odebrat nejdou. */
+  function palubaMcp() {
+    const box = el('div');
+    box.appendChild(el('div', 'set-note',
+      'Napojení, která přináší Paluba: WhatsApp, přes který ti Claude píše a ptá se tě, ' +
+      'a nástroje appky — prohlížeč, spojení s počítačem a napojení sdílená od kolegů.'));
+    box.appendChild(el('div', 'set-title plg-podnadpis', 'WhatsApp'));
+    box.appendChild(sluzby(null, (svc) => svc.id === 'whatsapp'));
+    box.appendChild(el('div', 'set-title plg-podnadpis', 'Součást appky'));
+    const summary = el('div', 'set-row');
+    const list = el('div', 'onb-list mcp-appka');
+    box.append(summary, list);
+    const naServeru = !!(state.config && state.config.gateway_user);
+    const PEVNE = [
+      {nazev: 'Prohlížeč pro Clauda', ico: 'i-globe', popis: 'vestavěný prohlížeč, který vidíš v appce',
+       chybi: 'Paluba ho napojí sama, jakmile je v appce zapnutý vestavěný prohlížeč.'},
+      {nazev: 'Spojení s počítačem', ico: 'i-laptop', popis: 'Claude ze serveru sahá na tvůj počítač',
+       chybi: naServeru ? 'Napojí se samo, když je tvůj prostor na serveru spojený s počítačem.'
+                        : 'Funguje v prostoru na serveru — Claude odtamtud sahá na tenhle počítač. Tady ho nepotřebuješ.'},
+    ];
+
+    function radek(info, x) {
+      const [cls, dot] = x ? (MCP_STATES[x.state] || MCP_STATES.unknown) : MCP_STATES.unknown;
+      const row = el('div', 'onb-row mcp-row' + (x ? '' : ' plg-zasedle'));
+      row.appendChild(window.HubPluginy ? HubPluginy.ikonka(info.nazev, info.ico) : el('span'));
+      row.appendChild(Object.assign(el('span', 'mcp-dot ' + cls), {textContent: x ? dot : '–'}));
+      const col = el('span', 'onb-col');
+      col.appendChild(el('span', null, info.nazev));
+      col.appendChild(el('small', null, x
+        ? info.popis + (x.state !== 'ok' && x.status ? ' · ' + x.status : '')
+        : 'není zapnuté · ' + info.chybi));
+      row.appendChild(col);
+      return row;
+    }
+
+    function draw(data) {
+      list.textContent = '';
+      summary.textContent = '';
+      if (data.ok === false && data.detail) summary.appendChild(el('span', 'set-warn', data.detail));
+      const appky = (data.servers || []).map((x) => [soucastAppky(x), x]).filter(([info]) => info);
+      for (const pevne of PEVNE) {
+        if (!appky.some(([info]) => info.nazev === pevne.nazev)) list.appendChild(radek(pevne, null));
+      }
+      for (const [info, x] of appky) list.appendChild(radek(info, x));
+    }
+
+    async function load() {
+      summary.textContent = '';
+      summary.appendChild(el('span', 'set-dim', 'Načítám…'));
+      try {
+        let data = await io.api('mcp');
+        // Hub se zrovna ptá serverů — počkat, ale ne donekonečna a ne po odchodu ze záložky.
+        for (let i = 0; data.running && i < 100; i++) {
+          summary.textContent = '';
+          summary.appendChild(el('span', 'set-dim', 'Zjišťuji, která napojení odpovídají…'));
+          await new Promise((r) => setTimeout(r, 1200));
+          if (!box.isConnected) return;
+          data = await io.api('mcp');
+        }
+        if (!data.running) mcpLast = data;
+        draw(data);
+      } catch (err) {
+        summary.textContent = '';
+        summary.appendChild(el('span', 'set-warn', 'Nepovedlo se: ' + err.message));
+      }
+    }
+
+    if (mcpLast) draw(mcpLast);
+    else for (const pevne of PEVNE) list.appendChild(radek(pevne, null));
+    load();
     return box;
   }
 
@@ -2014,12 +2163,13 @@
       'Další najdeš v záložce Objevit.'));
     box.appendChild(el('div', 'set-title plg-podnadpis', 'Služby'));
     let sluzbyServery = null;            // MCP servery, které už mají karty služeb
+    // WhatsApp patří do Paluba Marketu → MCP (palubaMcp).
     box.appendChild(sluzby((d) => {
       const nove = (d.servers || []).join('|');
       if (sluzbyServery && [...sluzbyServery].join('|') === nove) return;   // bez blikání při kontrole
       sluzbyServery = new Set(d.servers || []);
       if (mcpLast) draw(mcpLast);
-    }));
+    }, (svc) => svc.id !== 'whatsapp'));
     box.appendChild(el('div', 'set-title plg-podnadpis', 'Ostatní napojení'));
     const summary = el('div', 'set-row');
     const list = el('div', 'onb-list');
@@ -2027,9 +2177,7 @@
     const check = el('button', 'actionbtn', 'Zkontrolovat znovu');
     btns.appendChild(check);
     const tech = el('div');
-    const appBox = el('div', 'mcp-appka');
-    appBox.hidden = true;
-    tech.append(summary, list, appBox, btns);
+    tech.append(summary, list, btns);
     box.appendChild(tech);
 
     function busy(text) {
@@ -2053,8 +2201,8 @@
       // Funkční nahoře, pak co chce přihlásit, pak zbytek; uvnitř podle abecedy.
       const PORADI = {ok: 0, auth: 1, local: 2};
       const mimoSluzby = sluzbyServery ? servers.filter((x) => !sluzbyServery.has(x.name)) : servers;
-      const appky = mimoSluzby.filter((x) => soucastAppky(x));
-      const ostatni = mimoSluzby.filter((x) => !soucastAppky(x));
+      // Součást appky a WhatsApp ukazuje Paluba Market → MCP (palubaMcp).
+      const ostatni = mimoSluzby.filter((x) => !soucastAppky(x) && x.name !== 'whatsapp');
       // Počty jen za to, co je tady vidět (služby mají stav ve svých kartách).
       summary.textContent = '';
       if (data.ok !== false && ostatni.length) {
@@ -2062,27 +2210,6 @@
         summary.appendChild(el('span', 'set-ok', ok + ' z ' + ostatni.length + ' připojeno'));
       }
       if (!ostatni.length && servers.length) list.appendChild(el('div', 'set-note', 'Žádná další napojení — všechna jsou mezi službami výš.'));
-      // Součást appky: prohlížeč, spojení s počítačem, sdílená napojení od
-      // kolegů. Spravuje je hub sám — odebrat nejdou, rozbilo by to appku.
-      if (appky.length) {
-        appBox.textContent = '';
-        appBox.hidden = false;
-        appBox.appendChild(el('div', 'set-title plg-podnadpis', 'Součást appky'));
-        for (const x of appky) {
-          const info = soucastAppky(x);
-          const [cls, dot] = MCP_STATES[x.state] || MCP_STATES.unknown;
-          const row = el('div', 'onb-row mcp-row');
-          row.appendChild(window.HubPluginy ? HubPluginy.ikonka(info.nazev, info.ico) : el('span'));
-          row.appendChild(Object.assign(el('span', 'mcp-dot ' + cls), {textContent: dot}));
-          const col = el('span', 'onb-col');
-          col.appendChild(el('span', null, info.nazev));
-          col.appendChild(el('small', null, info.popis + (x.state !== 'ok' && x.status ? ' · ' + x.status : '')));
-          row.appendChild(col);
-          appBox.appendChild(row);
-        }
-      } else {
-        appBox.hidden = true;
-      }
       const serazene = ostatni.slice().sort((a, b) =>
         ((PORADI[a.state] ?? 3) - (PORADI[b.state] ?? 3)) ||
         a.name.replace(/^claude\.ai /, '').localeCompare(b.name.replace(/^claude\.ai /, ''), 'cs'));

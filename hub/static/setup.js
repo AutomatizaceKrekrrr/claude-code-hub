@@ -28,7 +28,7 @@
         <div class="onb-head">
           <span class="onb-mark"></span>
           <div>
-            <div class="onb-title">Instalace Claude Hub</div>
+            <div class="onb-title">Instalace Paluby</div>
             <div class="onb-sub">Chvilku to potrvá — všechno se nastaví samo.</div>
           </div>
         </div>
@@ -87,9 +87,9 @@
         go.textContent = 'Instaluju…';
         retry.hidden = true;
       } else if (st.done && st.ok) {
-        say('✓ Hotovo. Claude Hub je nainstalovaný.', 'ok');
+        say('✓ Hotovo. Paluba je nainstalovaná.', 'ok');
         go.disabled = false;
-        go.textContent = 'Otevřít Claude Hub';
+        go.textContent = 'Otevřít Palubu';
         retry.hidden = true;
         go.focus();
       } else if (st.done) {
@@ -131,9 +131,9 @@
       } catch (err) {
         console.warn('setup.js: launch', err);
         say('Aplikaci se nepodařilo spustit. Otevři ji z nabídky aplikací ' +
-            '(Claude Code Hub).', 'err');
+            '(Paluba, případně ještě pod starým názvem Claude Code Hub).', 'err');
         go.disabled = false;
-        go.textContent = 'Otevřít Claude Hub';
+        go.textContent = 'Otevřít Palubu';
       }
     };
     retry.onclick = start;

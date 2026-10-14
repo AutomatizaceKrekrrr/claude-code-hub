@@ -1,10 +1,12 @@
 <p align="center">
-  <img src="assets/hub-wordmark.svg" alt="Claude Code Hub" width="420"/>
+  <img src="assets/hub-wordmark.svg" alt="Paluba" width="420"/>
 </p>
 
-# Claude Code Hub
+# Paluba
 
 > Jedno okno kolem Claude Code — projekty v postranním panelu, každý otevřený jako vlastní tab se skutečným terminálem. Linux, Windows i macOS z jednoho kódu.
+
+Paluba se dřív jmenovala **Claude Code Hub** — pod tím názvem ji ještě najdeš v názvu repa, balíčků a instalaček.
 
 **Repo je jen instalačka.** Žádná data, žádné projekty, žádná paměť, žádné přihlašovací
 údaje. Instalátor se podívá, co máš na disku ty, zapíše to do `~/.claude/hub-config.json`
@@ -326,7 +328,7 @@ sama** — otázka navíc byla hlavní důvod, proč instalace nebyla rychlá:
 | **Playwright MCP** | prohlížeč pro Claude Code (~115 MB, potřebuje Node.js 20+) |
 | **Clockify MCP** | volitelně, jen když zadáš API klíč (nebo ho máš v `CLOCKIFY_API_KEY`) |
 | **hooky** | `Stop` (uloží stav session) a `SessionStart` (načte kategorie skillů z vaultu a stav minulé session) do `settings.json` |
-| **skilly** | 571 hotových postupů z [claude-brain-skills](https://github.com/jurapascal/claude-brain-skills) do vaultu — existující složku nikdy nepřepíše |
+| **skilly** | 571 hotových postupů z [paluba-market](https://github.com/jurapascal/paluba-market) do vaultu — existující složku nikdy nepřepíše |
 
 Zeptá se jen na to, co uhádnout nejde:
 

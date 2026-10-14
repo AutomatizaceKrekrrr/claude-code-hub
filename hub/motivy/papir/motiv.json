@@ -1,0 +1,32 @@
+{
+  "name": "Papír",
+  "version": "1.0.0",
+  "description": "Teplý sépiový papír s cihlovým akcentem a konverzace patkovým písmem, jako v knize. Ve tmě hnědý večerní papír.",
+  "author": "Paluba",
+  "nahled": ["#f4ecd8", "#fbf6e9", "#b5492b", "#2a2019"],
+  "barvy": {
+    "light": {
+      "AMBER": "#b5492b", "BG": "#f4ecd8", "BG_SIDEBAR": "#ece2c8", "BG_CARD": "#fbf6e9",
+      "FG": "#3b2f25", "FG_BRIGHT": "#2a2019", "DIM": "#7a6a58", "GREEN": "#4f7a2c",
+      "RED": "#b0392b", "CARD_HOVER": "#e5d9bb", "BORDER": "#d6c7a4", "SECTION": "#9c8a72",
+      "CLOUD": "#2f6690", "FIRMA": "#7a4b8f", "CHART": "#b5492b", "CHART_CLOUD": "#2f6690",
+      "TERM_PALETTE": [
+        "#3b2f25", "#b0392b", "#4f7a2c", "#9a6a12", "#2f6690", "#7a4b8f",
+        "#2f7f7a", "#7a6a58", "#5c4a3a", "#c9452f", "#5f8f36", "#b07d1a",
+        "#3d7bb0", "#8f5ca8", "#3a958f", "#9c8a72"
+      ]
+    },
+    "dark": {
+      "AMBER": "#d4714f", "BG": "#1f1a14", "BG_SIDEBAR": "#26201a", "BG_CARD": "#2c251d",
+      "FG": "#d9ccb4", "FG_BRIGHT": "#f0e6d2", "DIM": "#a08f78", "GREEN": "#8fb36a",
+      "RED": "#e0705a", "CARD_HOVER": "#362d23", "BORDER": "#43382b", "SECTION": "#7d6d59",
+      "CLOUD": "#6a9ccc", "FIRMA": "#b48cc9", "CHART": "#d4714f", "CHART_CLOUD": "#6a9ccc",
+      "TERM_PALETTE": [
+        "#2c251d", "#e0705a", "#8fb36a", "#d9a85b", "#6a9ccc", "#b48cc9",
+        "#7ab8a8", "#d9ccb4", "#5a4d3e", "#f08a72", "#a6c886", "#ecc07a",
+        "#8ab6e0", "#c9a6db", "#96cfc0", "#f6eedc"
+      ]
+    }
+  },
+  "style": "motiv.css"
+}

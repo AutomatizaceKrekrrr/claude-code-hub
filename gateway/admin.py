@@ -328,7 +328,7 @@ def cmd_apikey(a, args):
           " běžící zastavíš: stop <e-mail>.")
 
 
-SKILLS_REPO = os.environ.get("HUB_SKILLS_REPO", "jurapascal/claude-brain-skills")
+SKILLS_REPO = os.environ.get("HUB_SKILLS_REPO", "jurapascal/paluba-market")
 
 
 def _skill_count(root):

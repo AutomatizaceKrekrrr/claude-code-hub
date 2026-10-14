@@ -1736,7 +1736,7 @@
       <div class="relace-telo">${telo}</div>` : `
       <div class="onb-box">
         <div class="onb-head">
-          <span class="onb-mark"><svg class="ico" width="26" height="26"><use href="#i-hub"/></svg></span>
+          <span class="onb-mark"><svg class="ico" width="26" height="26"><use href="#i-paluba"/></svg></span>
           <div>
             <div class="onb-title"></div>
             <div class="onb-sub"></div>
