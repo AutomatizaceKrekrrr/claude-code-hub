@@ -27,6 +27,7 @@ KEY=/etc/claude-hub/zalohy.asc
 DEST=/var/backups/claude-hub
 SRC=/home/hub
 KEEP=${HUB_ZALOHA_KEEP:-14}          # kolik denních záloh se drží
+REZERVA_MB=${HUB_ZALOHA_REZERVA_MB:-3072}   # kolik místa musí po záloze zbýt
 LOG=/var/log/claude-hub-zaloha.log
 
 log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$LOG"; }
@@ -67,7 +68,9 @@ main() {
     local last need free f
     last="$(ls -1t "$DEST"/hub-*.tar.zst.gpg 2>/dev/null | head -n 1)"
     if [ -n "$last" ]; then
-        need=$(( $(stat -c %s "$last") * 11 / 10 ))
+        # + rezerva pro běžící prostory: lidé během zálohy dál zapisují
+        # a plný disk by jim shodil práci, ne jen zálohu.
+        need=$(( $(stat -c %s "$last") * 11 / 10 + REZERVA_MB * 1024 * 1024 ))
         while read -r f; do
             [ -n "$f" ] || continue
             free="$(df --output=avail -B1 "$DEST" | tail -n 1)"
@@ -77,7 +80,7 @@ main() {
         done <<<"$(ls -1t "$DEST"/hub-*.tar.zst.gpg 2>/dev/null | tail -n +$((KEEP > 1 ? KEEP : 2)) | tac)"
         free="$(df --output=avail -B1 "$DEST" | tail -n 1)"
         if [ "$free" -le "$need" ]; then
-            log "VAROVÁNÍ: na disku je $((free / 1024 / 1024)) MB, záloha bude mít asi $((need / 1024 / 1024)) MB — zkouším i tak"
+            log "VAROVÁNÍ: na disku je $((free / 1024 / 1024)) MB, se zálohou a rezervou je potřeba asi $((need / 1024 / 1024)) MB — zkouším i tak"
         fi
     fi
 
