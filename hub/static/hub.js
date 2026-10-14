@@ -3951,7 +3951,8 @@ function handle(msg) {
     if (!msg.list.length) restoreAfterRestart();
   } else if (msg.t === 'host-oznameni') {
     // Co udělal host se Správou předplatného (gateway/pristup.py).
-    if (!STATE.guest && msg.text) toast(msg.text);
+    // `restart`: změna přihlášení Clauda platí až v restartovaném prostoru.
+    if (!STATE.guest && msg.text) msg.restart ? restartSpace(msg.text) : toast(msg.text);
   } else if (msg.t === 'host-vstup') {
     if (!STATE.guest) toast(`${msg.name} vstoupil(a) do tvého prostoru (${msg.role}).`);
   } else if (msg.t === 'memory-saved') {

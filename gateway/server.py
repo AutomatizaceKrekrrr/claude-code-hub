@@ -556,7 +556,7 @@ function kresli(d) {{
   const u = d.ucet || {{}}, p = d.prihlaseni || {{}};
   $('stav').textContent = 'Režim: ' + (REZIM[d.rezim.mode] || d.rezim.mode) +
     (u.email ? ' · účet ' + u.email + (u.plan ? ' (' + u.plan + ')' : '') : '') +
-    (d.needs_restart ? ' · projeví se po restartu prostoru' : '');
+    (d.needs_restart ? ' · začne platit, až vlastník restartuje prostor (dostal upozornění)' : '');
   const bezi = p.state === 'starting' || p.state === 'waiting' || p.state === 'token';
   $('login').hidden = !bezi;
   $('prihlasit').hidden = bezi;
@@ -2004,6 +2004,25 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         finally:
             conn.close()
 
+    def _po_zmene_predplatneho(self, owner, user, text):
+        """Nové přihlášení Clauda platí až v nově spuštěném prostoru. Když
+        k němu není připojený žádný prohlížeč a Claude v něm nepracuje, brána
+        ho restartuje hned (taby se vrátí). Jinak vlastníkovi nabídne restart
+        upozorněním — rozdělanou práci mu nepřeruší. Vrací hotovo | ceka."""
+        proc = self.hubs.procs.get(owner["id"]) if self.hubs else None
+        if not proc or not proc.alive():
+            return "hotovo"                   # nový start už vezme nové přihlášení
+        if not proc.conns:
+            busy = self._hub_call(proc, "predplatne-host", {"action": "zaneprazdneno"},
+                                  timeout=10).get("busy", True)
+            if not busy:
+                self.hubs.restart(owner)
+                pristup.log(owner["id"], user["id"], "predplatne-restart")
+                return "hotovo"
+        self._hub_call(proc, "predplatne-host",
+                       {"action": "oznam", "text": text, "restart": True}, timeout=5)
+        return "ceka"
+
     def _owner_notice(self, owner, text):
         """Toast vlastníkovi — jen když jeho prostor běží (nebudí ho kvůli tomu)."""
         proc = self.hubs.procs.get(owner["id"]) if self.hubs else None
@@ -2032,9 +2051,10 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
             if akce == "odpojit":
                 # Stejné jako „Odpojit“ u vlastníka: zpátky na firemní přístup.
                 workspace.remove_predplatne(owner)
-                self.hubs.stop_idle(owner["id"])
                 pristup.log(owner["id"], user["id"], "predplatne-odpojit")
-                self._owner_notice(owner, f"{jmeno} odpojil(a) vlastní předplatné — Claude jede zase přes firmu.")
+                self._po_zmene_predplatneho(
+                    owner, user, f"{jmeno} odpojil(a) vlastní předplatné — Claude pojede zase "
+                                 "přes firmu, až se prostor restartuje.")
             else:
                 try:
                     hub = self.hubs.get(owner)
@@ -2064,15 +2084,20 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
                     workspace.save_predplatne(owner, token, f"Správa předplatného: {jmeno}"[:80])
                     out["prihlaseni"] = {"state": "done", "url": "", "error": ""}
                     pristup.log(owner["id"], user["id"], "predplatne-pripojeno")
-                    self._owner_notice(owner, f"{jmeno} připojil(a) tvé vlastní předplatné Claude — "
-                                       "projeví se po restartu prostoru.")
+                    out["restart"] = self._po_zmene_predplatneho(
+                        owner, user, f"{jmeno} připojil(a) tvé vlastní předplatné Claude — "
+                                     "začne platit po restartu prostoru.")
                 except ValueError as exc:
                     out["prihlaseni"] = {"state": "error", "url": "", "error": str(exc)}
                 del token
                 state = workspace.claude_state(owner)
                 state.pop("label", None)
                 out["rezim"] = state
-            out["needs_restart"] = proc.auth_mark != workspace.auth_mark(owner)
+            # Po automatickém restartu (out["restart"] == "hotovo") už starý
+            # proces neběží a nové přihlášení vezme další start.
+            out["needs_restart"] = out.get("restart") != "hotovo" and \
+                self.hubs.procs.get(owner["id"]) is proc and \
+                proc.auth_mark != workspace.auth_mark(owner)
         return out
 
     def _gw_spotreba(self, method, user):

@@ -235,7 +235,25 @@ def _public():
         return {k: STATE[k] for k in ("state", "url", "error")}
 
 
-def host_action(action, payload, broadcast=None):
+def _zaneprazdneno(hub):
+    """Pracuje teď v prostoru Claude (uprostřed tahu nebo s úlohou na pozadí)?
+    Pak by ho restart přerušil — brána raději počká na vlastníka."""
+    from . import cteni, restart
+    for s in list(getattr(hub, "sessions", {}).values()):
+        if s.exited:
+            continue
+        try:
+            cesta = core.transcript_for(s)
+            od_ms = int(s.started * 1000)
+            if cesta and (restart._uprostred_prace(cesta, od_ms) or cteni.pozadi(cesta, od_ms)):
+                return True
+        except Exception as exc:          # noqa: BLE001 — radši opatrně: pracuje
+            core.log_error("předplatné: stav práce", exc)
+            return True
+    return False
+
+
+def host_action(action, payload, broadcast=None, hub=None):
     """Volá jen brána. Host vidí jen stav, odkaz a výsledek — token ani výstup
     terminálu ven nejdou (kromě `vyzvednout`, to bere brána pro sebe)."""
     if action == "stav":
@@ -257,9 +275,12 @@ def host_action(action, payload, broadcast=None):
         if token:
             _set(state="done", url="")
         return {"token": token}
+    if action == "zaneprazdneno":
+        return {"busy": _zaneprazdneno(hub) if hub else True}
     if action == "oznam":
         if broadcast:
-            broadcast({"t": "host-oznameni", "text": str(payload.get("text") or "")[:300]})
+            broadcast({"t": "host-oznameni", "text": str(payload.get("text") or "")[:300],
+                       "restart": bool(payload.get("restart"))})
         return {"ok": True}
     return {"error": "Neznámá akce."}
 

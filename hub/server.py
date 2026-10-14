@@ -683,7 +683,7 @@ class Handler(BaseHTTPRequestHandler):
             if guest or not core.on_gateway():
                 return self._json({"error": "Nepovoleno."}, 403)
             return self._json(predplatne.host_action(str(payload.get("action") or ""), payload,
-                                                     HUB.broadcast))
+                                                     HUB.broadcast, HUB))
         if name == "app-vzhled":
             # Vlastní název a ikona appky (hub/vzhled.py, Nastavení → Vzhled).
             if self.command != "POST":
