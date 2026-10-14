@@ -291,7 +291,7 @@ Napojení povede na <b>{where}</b>.</p>
 <input type=hidden name=krok value=souhlas>
 <button type=submit name=rozhodnuti value=povolit>Povolit</button>
 <button type=submit name=rozhodnuti value=zamitnout
- style="background:none;border:1px solid #3a3524;color:#c8c0a8">Zamítnout</button>
+ style="background:none;border:1px solid #30363d;color:#c9d1d9">Zamítnout</button>
 {err}
 </form>"""
     return h._send(200, _page("Napojení — Paluba", body), "text/html; charset=utf-8",

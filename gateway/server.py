@@ -479,7 +479,7 @@ def _page(title, body):
 <link rel=manifest href="/manifest.webmanifest">
 <link rel=icon href="/favicon.ico" sizes=any>
 <link rel=apple-touch-icon href="/icon-192.png">
-<meta name=theme-color content="#16150f">
+<meta name=theme-color content="#0d1117">
 <meta name=mobile-web-app-capable content=yes>
 <meta name=apple-mobile-web-app-capable content=yes>
 <meta name=apple-mobile-web-app-status-bar-style content=black-translucent>
@@ -488,38 +488,39 @@ def _page(title, body):
 :root{color-scheme:dark}
 *{box-sizing:border-box}
 body{font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;
-min-height:100vh;display:grid;place-items:center;background:#16150f;color:#e8e3d3;padding:24px}
-.card{width:100%;max-width:24rem;background:#1f1d15;border:1px solid #322e20;
+min-height:100vh;display:grid;place-items:center;background:#0d1117;color:#e6edf3;padding:24px}
+.card{width:100%;max-width:24rem;background:#1b2129;border:1px solid #30363d;
 border-radius:12px;padding:28px}
 h1{font-size:1.25rem;margin:0 0 4px}
-p.sub{margin:0 0 20px;color:#9a927c;font-size:.9rem}
-label{display:block;margin:14px 0 4px;font-size:.85rem;color:#c8c0a8}
-input{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #3a3524;
-background:#14130d;color:#e8e3d3;font-size:1rem}
-input:focus{outline:none;border-color:#e0a458}
+p.sub{margin:0 0 20px;color:#8b949e;font-size:.9rem}
+label{display:block;margin:14px 0 4px;font-size:.85rem;color:#c9d1d9}
+input{width:100%;padding:10px 12px;border-radius:8px;border:1px solid #30363d;
+background:#0d1117;color:#e6edf3;font-size:1rem}
+input:focus{outline:none;border-color:#4c97f0}
 button{margin-top:20px;width:100%;padding:11px;border:0;border-radius:8px;
-background:#e0a458;color:#1a1710;font-weight:600;font-size:1rem;cursor:pointer}
-button:hover{background:#e8b76a}
-.err{margin-top:14px;color:#f0a0a0;font-size:.9rem;min-height:1.2em}
-a{color:#e0a458}
+background:#4c97f0;color:#0d1117;font-weight:600;font-size:1rem;cursor:pointer}
+button:hover{background:#6aa9f4}
+.err{margin-top:14px;color:#ff7b72;font-size:.9rem;min-height:1.2em}
+a{color:#4c97f0}
 .card.wide{max-width:30rem}
-.steps{padding-left:1.2rem;margin:10px 0;font-size:.92rem;line-height:1.55;color:#c8c0a8}
+.steps{padding-left:1.2rem;margin:10px 0;font-size:.92rem;line-height:1.55;color:#c9d1d9}
 .qr{background:#fff;border-radius:10px;padding:10px;display:flex;justify-content:center;margin:12px 0}
 .qr svg{display:block;width:220px;height:220px}
-.hint{font-size:.85rem;color:#9a927c;margin:10px 0 0;line-height:1.5}
-code{font-family:ui-monospace,monospace;color:#e0a458;overflow-wrap:anywhere}
+.hint{font-size:.85rem;color:#8b949e;margin:10px 0 0;line-height:1.5}
+code{font-family:ui-monospace,monospace;color:#4c97f0;overflow-wrap:anywhere}
 .key{display:block;margin-top:4px;font-size:1rem;letter-spacing:.02em}
 .codes{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:16px 0}
-.codes code{background:#14130d;border:1px solid #3a3524;border-radius:6px;padding:7px;text-align:center;font-size:1rem;color:#e8e3d3}
+.codes code{background:#0d1117;border:1px solid #30363d;border-radius:6px;padding:7px;text-align:center;font-size:1rem;color:#e6edf3}
 a.button{display:block;text-align:center;margin-top:20px;padding:11px;border-radius:8px;
-background:#e0a458;color:#1a1710;font-weight:600;text-decoration:none}
+background:#4c97f0;color:#0d1117;font-weight:600;text-decoration:none}
 </style>
 """ + body + "</html>").encode("utf-8")
 
 
 def predplatne_page(owner):
     """Správa předplatného pro hosta — místo hubu vlastníka (gateway/pristup.py).
-    Vlastní stránka v barvách appky (paleta DARK z hub/core.py), ne obecná
+    Vlastní stránka v barvách appky na serveru (paleta DARK z hub/core.py,
+    modrý akcent prostoru `CLOUD`), ne obecná
     karta brány: host má vidět, že je v Palubě, v čím prostoru a co se stalo."""
     who = html.escape(owner.get("name") or owner.get("email") or "")
     return ("""<!doctype html><html lang=cs><meta charset=utf-8>
@@ -529,7 +530,7 @@ def predplatne_page(owner):
 <meta name=theme-color content="#161b22">
 <style>
 :root{color-scheme:dark;--bg:#0d1117;--bar:#161b22;--card:#1b2129;--hover:#242b35;--border:#30363d;
---fg:#d0d0d0;--bright:#e6edf3;--dim:#8b949e;--accent:#e0843c;--green:#3fb950;--red:#f85149}
+--fg:#d0d0d0;--bright:#e6edf3;--dim:#8b949e;--accent:#4c97f0;--green:#3fb950;--red:#f85149}
 *{box-sizing:border-box}
 html,body{margin:0;min-height:100%;background:var(--bg);color:var(--fg);
 font:14px/1.5 system-ui,"Segoe UI",Cantarell,Ubuntu,sans-serif}
@@ -544,7 +545,7 @@ color:var(--accent);font-size:12px;font-weight:600;white-space:nowrap;overflow:h
 border:1px solid var(--border);background:var(--card);color:var(--bright);font:inherit;font-weight:600;
 cursor:pointer;text-decoration:none;white-space:nowrap}
 .btn:hover{background:var(--hover)}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:#1a1108}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
 .btn.primary:hover{filter:brightness(1.08)}
 .btn.small{padding:6px 12px;font-size:13px}
 .btn.danger{background:none;border-color:transparent;color:var(--dim);font-weight:500}
@@ -588,7 +589,7 @@ input:focus{outline:none;border-color:var(--accent)}
 @media (max-width:480px){.badge{max-width:46vw}.btn.zpet span{display:none}}
 </style>
 <header class=top>
-  <span class=brand><svg viewBox="0 0 24 24" fill="none" stroke="#e0843c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4l6 5.5L9 15"/><path d="M4.5 18.5h15l-1.6 2.5h-11.8z" fill="#e0843c" stroke="none"/></svg>Paluba</span>
+  <span class=brand><svg viewBox="0 0 24 24" fill="none" stroke="#4c97f0" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4l6 5.5L9 15"/><path d="M4.5 18.5h15l-1.6 2.5h-11.8z" fill="#4c97f0" stroke="none"/></svg>Paluba</span>
   <span class=badge>Prostor: """ + who + """ · Správa předplatného</span>
   <span class=sp></span>
   <button id=zpet class="btn small zpet">← <span>Zpět do svého</span></button>
@@ -716,7 +717,7 @@ PASSKEY_LOGIN_JS = """<script>
   const b64e = (b) => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');
   const sep = document.createElement('p'); sep.className = 'hint'; sep.style.textAlign = 'center'; sep.textContent = 'nebo';
   const btn = document.createElement('button'); btn.type = 'button'; btn.id = 'pklogin';
-  btn.style.cssText = 'background:transparent;color:#e0a458;border:1px solid #e0a458;margin-top:6px';
+  btn.style.cssText = 'background:transparent;color:#4c97f0;border:1px solid #4c97f0;margin-top:6px';
   btn.textContent = 'Přihlásit se passkeyem';
   const err = document.createElement('div'); err.className = 'err'; err.id = 'pklogerr';
   form.append(sep, btn, err);
