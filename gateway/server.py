@@ -556,7 +556,7 @@ function kresli(d) {{
   const u = d.ucet || {{}}, p = d.prihlaseni || {{}};
   $('stav').textContent = 'Režim: ' + (REZIM[d.rezim.mode] || d.rezim.mode) +
     (u.email ? ' · účet ' + u.email + (u.plan ? ' (' + u.plan + ')' : '') : '') +
-    (d.needs_restart ? ' · začne platit, až vlastník restartuje prostor (dostal upozornění)' : '');
+    (d.needs_restart ? ' · nové přihlášení se do prostoru ještě nepředalo' : '');
   const bezi = p.state === 'starting' || p.state === 'waiting' || p.state === 'token';
   $('login').hidden = !bezi;
   $('prihlasit').hidden = bezi;
@@ -2004,24 +2004,18 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         finally:
             conn.close()
 
-    def _po_zmene_predplatneho(self, owner, user, text):
-        """Nové přihlášení Clauda platí až v nově spuštěném prostoru. Když
-        k němu není připojený žádný prohlížeč a Claude v něm nepracuje, brána
-        ho restartuje hned (taby se vrátí). Jinak vlastníkovi nabídne restart
-        upozorněním — rozdělanou práci mu nepřeruší. Vrací hotovo | ceka."""
-        proc = self.hubs.procs.get(owner["id"]) if self.hubs else None
+    def _preved_prihlaseni(self, user):
+        """Nové přihlášení Clauda (připojené / odpojené předplatné) pošle do
+        běžícího prostoru — nové chaty na něm jedou hned, bez restartu.
+        Neběžící prostor ho vezme při startu sám (workspace.session_env)."""
+        proc = self.hubs.procs.get(user["id"]) if self.hubs else None
         if not proc or not proc.alive():
-            return "hotovo"                   # nový start už vezme nové přihlášení
-        if not proc.conns:
-            busy = self._hub_call(proc, "predplatne-host", {"action": "zaneprazdneno"},
-                                  timeout=10).get("busy", True)
-            if not busy:
-                self.hubs.restart(owner)
-                pristup.log(owner["id"], user["id"], "predplatne-restart")
-                return "hotovo"
-        self._hub_call(proc, "predplatne-host",
-                       {"action": "oznam", "text": text, "restart": True}, timeout=5)
-        return "ceka"
+            return
+        env = workspace.session_env(user)
+        out = self._hub_call(proc, "predplatne-host", {"action": "prihlaseni", "env": {
+            k: env.get(k, "") for k in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")}}, timeout=10)
+        if out.get("ok"):
+            proc.auth_mark = workspace.auth_mark(user)
 
     def _owner_notice(self, owner, text):
         """Toast vlastníkovi — jen když jeho prostor běží (nebudí ho kvůli tomu)."""
@@ -2052,9 +2046,9 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
                 # Stejné jako „Odpojit“ u vlastníka: zpátky na firemní přístup.
                 workspace.remove_predplatne(owner)
                 pristup.log(owner["id"], user["id"], "predplatne-odpojit")
-                self._po_zmene_predplatneho(
-                    owner, user, f"{jmeno} odpojil(a) vlastní předplatné — Claude pojede zase "
-                                 "přes firmu, až se prostor restartuje.")
+                self._preved_prihlaseni(owner)
+                self._owner_notice(owner, f"{jmeno} odpojil(a) vlastní předplatné — nové chaty "
+                                          "jedou zase přes firmu.")
             else:
                 try:
                     hub = self.hubs.get(owner)
@@ -2084,20 +2078,16 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
                     workspace.save_predplatne(owner, token, f"Správa předplatného: {jmeno}"[:80])
                     out["prihlaseni"] = {"state": "done", "url": "", "error": ""}
                     pristup.log(owner["id"], user["id"], "predplatne-pripojeno")
-                    out["restart"] = self._po_zmene_predplatneho(
-                        owner, user, f"{jmeno} připojil(a) tvé vlastní předplatné Claude — "
-                                     "začne platit po restartu prostoru.")
+                    self._preved_prihlaseni(owner)
+                    self._owner_notice(owner, f"{jmeno} připojil(a) tvé vlastní předplatné Claude — "
+                                              "nové chaty už jedou na něm.")
                 except ValueError as exc:
                     out["prihlaseni"] = {"state": "error", "url": "", "error": str(exc)}
                 del token
                 state = workspace.claude_state(owner)
                 state.pop("label", None)
                 out["rezim"] = state
-            # Po automatickém restartu (out["restart"] == "hotovo") už starý
-            # proces neběží a nové přihlášení vezme další start.
-            out["needs_restart"] = out.get("restart") != "hotovo" and \
-                self.hubs.procs.get(owner["id"]) is proc and \
-                proc.auth_mark != workspace.auth_mark(owner)
+            out["needs_restart"] = proc.auth_mark != workspace.auth_mark(owner)
         return out
 
     def _gw_spotreba(self, method, user):
@@ -2281,10 +2271,9 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
                     workspace.save_predplatne(user, form.get("token"), label)
             except ValueError as exc:
                 return self._json({"error": str(exc)}, 400)
-            # Běžící prostor má přihlášení ze svého startu. Když v něm nikdo
-            # nepracuje, zastaví se hned a další otevření ho pustí už s novým.
-            if self.hubs:
-                self.hubs.stop_idle(user["id"])
+            # Běžící prostor dostane nové přihlášení hned — nové chaty na něm
+            # jedou bez restartu (hub/predplatne.py, _prihlaseni).
+            self._preved_prihlaseni(user)
         state = workspace.claude_state(user)
         proc = self.hubs.procs.get(user["id"]) if self.hubs else None
         state["running"] = bool(proc and proc.alive())

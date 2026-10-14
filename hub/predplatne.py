@@ -235,25 +235,28 @@ def _public():
         return {k: STATE[k] for k in ("state", "url", "error")}
 
 
-def _zaneprazdneno(hub):
-    """Pracuje teď v prostoru Claude (uprostřed tahu nebo s úlohou na pozadí)?
-    Pak by ho restart přerušil — brána raději počká na vlastníka."""
-    from . import cteni, restart
-    for s in list(getattr(hub, "sessions", {}).values()):
-        if s.exited:
-            continue
-        try:
-            cesta = core.transcript_for(s)
-            od_ms = int(s.started * 1000)
-            if cesta and (restart._uprostred_prace(cesta, od_ms) or cteni.pozadi(cesta, od_ms)):
-                return True
-        except Exception as exc:          # noqa: BLE001 — radši opatrně: pracuje
-            core.log_error("předplatné: stav práce", exc)
-            return True
-    return False
+# Přihlášení Clauda, které brána předává prostoru (gateway/workspace.session_env).
+AUTH_KLICE = ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY")
 
 
-def host_action(action, payload, broadcast=None, hub=None):
+def _prihlaseni(env, prenacti=None):
+    """Brána poslala nové přihlášení (připojené / odpojené předplatné): platí
+    hned pro každý nový tab — taby berou prostředí z hubu (core.child_env) —
+    a běžící chaty se nad toutéž konverzací spustí znovu, až nepracují."""
+    env = env if isinstance(env, dict) else {}
+    pred = {k: os.environ.get(k, "") for k in AUTH_KLICE}
+    for k in AUTH_KLICE:
+        os.environ.pop(k, None)
+        v = env.get(k)
+        if isinstance(v, str) and v.strip():
+            os.environ[k] = v.strip()
+    # Běžící chaty se přepnou taky (Hub.prenacti_chaty) — jen když se něco změnilo.
+    if prenacti and pred != {k: os.environ.get(k, "") for k in AUTH_KLICE}:
+        prenacti()
+    return {"ok": True}
+
+
+def host_action(action, payload, broadcast=None, prenacti=None):
     """Volá jen brána. Host vidí jen stav, odkaz a výsledek — token ani výstup
     terminálu ven nejdou (kromě `vyzvednout`, to bere brána pro sebe)."""
     if action == "stav":
@@ -275,12 +278,11 @@ def host_action(action, payload, broadcast=None, hub=None):
         if token:
             _set(state="done", url="")
         return {"token": token}
-    if action == "zaneprazdneno":
-        return {"busy": _zaneprazdneno(hub) if hub else True}
+    if action == "prihlaseni":
+        return _prihlaseni(payload.get("env"), prenacti)
     if action == "oznam":
         if broadcast:
-            broadcast({"t": "host-oznameni", "text": str(payload.get("text") or "")[:300],
-                       "restart": bool(payload.get("restart"))})
+            broadcast({"t": "host-oznameni", "text": str(payload.get("text") or "")[:300]})
         return {"ok": True}
     return {"error": "Neznámá akce."}
 

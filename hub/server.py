@@ -188,6 +188,7 @@ class Session:
         self.driver = None
         self.size = (cols, rows)
         self.exited = False
+        self._znovu = False
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
         self._lock = threading.Lock()
         self.thread = threading.Thread(target=self._pump, daemon=True)
@@ -211,6 +212,8 @@ class Session:
                         conn.send_json(msg)
         # Pod zámkem spolu s attach(): každé okno dostane „exit" právě jednou.
         with self._lock:
+            if self._znovu:
+                return                       # relaunch(): tab jede dál s novým procesem
             self.exited = True
             conns = list(self.conns)
         for conn in conns:
@@ -273,6 +276,33 @@ class Session:
         if size != self.size:
             self.size = size
             self.pty.resize(*size)
+
+    def relaunch(self, argv, cwd, env):
+        """Pustí v tomtéž tabu nový proces (stejné id, stejná okna). Pro Clauda
+        s novým přihlášením: `--resume` téže konverzace, takže člověk vidí jen
+        krátké překreslení a pokračuje, kde byl."""
+        with self._lock:
+            self._znovu = True
+        try:
+            self.pty.close()
+        except Exception:
+            pass
+        self.thread.join(timeout=5)
+        child = core.child_env()
+        child.update(env or {})
+        self.pty = pty_backend.spawn(argv, cwd=cwd, env=child, cols=self.size[0], rows=self.size[1])
+        with self._lock:
+            self._znovu = False
+            self.exited = False
+            self.started = time.time()
+            self.resume = (env or {}).get("HUB_AGENT_RESUME", "") or self.resume
+            self.chat_id = (env or {}).get("HUB_SESSION_ID", "") or self.resume
+            self.buffer = bytearray()
+            self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+            for conn in self.conns:
+                conn.send_json({"t": "out", "id": self.id, "d": "\x1b[2J\x1b[3J\x1b[H"})
+        self.thread = threading.Thread(target=self._pump, daemon=True)
+        self.thread.start()
 
     def close(self):
         with self._lock:
@@ -374,6 +404,47 @@ class Hub:
         script, env = core.cmd_agent(path, agent, model=model, resume=resume, fork=fork,
                                      vault=vault, prompt=prompt)
         return script, path, env
+
+    def prenacti_chaty(self, cekat=6 * 3600):
+        """Nové přihlášení Clauda (hub/predplatne.py) i do už běžících chatů:
+        každý tab s Claudem se spustí znovu nad toutéž konverzací. Kdo zrovna
+        pracuje (uprostřed tahu, úloha na pozadí), dojede na starém a přepne
+        se, až skončí — rozdělanou práci to nepřeruší."""
+        from . import cteni
+
+        def zaneprazdneny(s):
+            cesta = core.transcript_for(s)
+            od_ms = int(s.started * 1000)
+            return bool(cesta and (restart._uprostred_prace(cesta, od_ms) or cteni.pozadi(cesta, od_ms)))
+
+        def jed():
+            cekaji = [s for s in list(self.sessions.values())
+                      if not s.exited and (s.kind == "project" or s.kind.startswith("slash:"))
+                      and (s.agent or core.default_agent()) == "claude"]
+            konec = time.time() + cekat
+            while cekaji and time.time() < konec:
+                zbyva = []
+                for s in cekaji:
+                    if s.exited or self.sessions.get(s.id) is not s:
+                        continue
+                    try:
+                        if zaneprazdneny(s):
+                            zbyva.append(s)
+                            continue
+                        chat = restart._resume_for(self, s)
+                        if not chat:
+                            continue
+                        script, cwd, env = self._command_for("project", s.path, s.agent, s.model,
+                                                             resume=chat, vault=s.vault)
+                        env = {**env, "HUB_TAB": core.tab_tag(s.id)}
+                        s.relaunch(core.bash_argv(script), cwd, env)
+                        core.log(f"tab {s.id}: Claude s novým přihlášením (pokračuje v {chat[:8]})")
+                    except Exception as exc:
+                        core.log_error("přenačtení chatu s novým přihlášením", exc)
+                cekaji = zbyva
+                if cekaji:
+                    time.sleep(10)
+        threading.Thread(target=jed, daemon=True).start()
 
     def close(self, sid, autosave=True):
         session = self.sessions.pop(sid, None)
@@ -683,7 +754,7 @@ class Handler(BaseHTTPRequestHandler):
             if guest or not core.on_gateway():
                 return self._json({"error": "Nepovoleno."}, 403)
             return self._json(predplatne.host_action(str(payload.get("action") or ""), payload,
-                                                     HUB.broadcast, HUB))
+                                                     HUB.broadcast, HUB.prenacti_chaty))
         if name == "app-vzhled":
             # Vlastní název a ikona appky (hub/vzhled.py, Nastavení → Vzhled).
             if self.command != "POST":
