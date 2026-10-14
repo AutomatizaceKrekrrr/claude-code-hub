@@ -767,9 +767,11 @@ def agenti(path):
 # Monitor, agent na pozadí. Konec ohlásí <task-notification> se stejným
 # tool-use-id, případně TaskStop. Úlohy jsou děti procesu Claude Code — co se
 # spustilo dřív, než tenhle proces naběhl (`od`), už neběží a nepočítá se.
-_BG_ID = re.compile(r"(?:with ID|agentId|task_id)[:=]\s*([A-Za-z0-9_-]+)")
+_BG_ID = re.compile(r"(?:resumedAgentId\"?:\s*\"|with ID|agentId|task_id)[:=]?\s*([A-Za-z0-9_-]+)")
+# „Resuming agent" = SendMessage znovu rozběhl doběhlého agenta: běží zase na
+# pozadí a konec ohlásí task-notification s jeho id jako task-id.
 _BG_ZNAK = ("running in background", "Async agent launched", "Monitor started",
-            "is now running", "monitoring")
+            "is now running", "monitoring", "Resuming agent")
 _BG_STAV = {}
 _BG_ZAMEK = threading.Lock()
 
@@ -833,9 +835,12 @@ def _bg_radek(stav, entry):
                                      "detail": _zkrat(str(vstup.get("prompt") or ""), 600),
                                      "od": od, "do": od + za * 1000}
                 continue
-            if name == "Monitor" or name == "Agent" or \
+            if name == "Monitor" or name == "Agent" or name == "SendMessage" or \
                     (isinstance(vstup, dict) and vstup.get("run_in_background")):
                 nadpis, _meta, detail = _popis(name, vstup)
+                if name == "SendMessage":
+                    nadpis = "agent pokračuje: " + str(vstup.get("summary") or vstup.get("to") or "")
+                    detail = str(vstup.get("message") or "")
                 stav["cekaji"][b.get("id")] = {
                     "id": b.get("id"), "name": name, "title": nadpis,
                     "detail": _zkrat(detail, 600), "od": _ms(entry.get("timestamp")),
