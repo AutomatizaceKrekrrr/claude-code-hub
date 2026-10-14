@@ -922,6 +922,23 @@
       const u = state.config.gateway_user || {};
       const zpet = HubServer.localBack();
       body.textContent = '';
+      if (state.guest) {
+        // Host v cizím prostoru: účet a zabezpečení tady patří vlastníkovi,
+        // svoje má host ve vlastním prostoru (gateway/pristup.py).
+        body.appendChild(el('div', 'set-note',
+          `Jsi v prostoru ${state.guest.owner_name || '?'} jako „${state.guest.label}“. ` +
+          'Svůj účet, heslo a přístupy spravuješ ve vlastním prostoru.'));
+        const back = el('button', 'btn primary', 'Zpět do svého');
+        back.onclick = async () => {
+          back.disabled = true;
+          await fetch('/gw/pristup', {method: 'POST', credentials: 'same-origin',
+            headers: {'Content-Type': 'application/json', 'X-Hub-Account': '1'},
+            body: JSON.stringify({akce: 'odejit'})}).catch(() => {});
+          location.href = '/';
+        };
+        body.appendChild(back);
+        return;
+      }
 
       // Kdo jsem: iniciály, jméno, e-mail a role — a odhlášení hned vedle.
       const prof = el('div', 'acc-profile');
@@ -962,7 +979,104 @@
       cards.appendChild(card(HubPredplatne.serverBlock(io), 'i-hub'));
       cards.appendChild(card(HubPocitac.serverBlock(io), 'i-laptop'));
       cards.appendChild(card(zabezpeceni(), 'i-lock'));
+      cards.appendChild(card(pristup(), 'i-user'));
       body.appendChild(cards);
+    }
+
+    /* Přístup do mého prostoru (gateway/pristup.py): komu a s jakou rolí,
+       změna role, odebrání a záznam, kdo kdy přišel a co otevřel. Vlastník je
+       vždycky ten, kdo je přihlášený — brána nic jiného nepustí. */
+    function pristup() {
+      const wrap = el('div', 'acc-sec');
+      wrap.appendChild(el('div', 'set-title', 'Přístup'));
+      wrap.appendChild(el('div', 'set-note',
+        'Pusť do svého prostoru někoho z týmu — třeba aby ti nastavil předplatné. ' +
+        'Přístup můžeš kdykoli odebrat, platí to hned.'));
+      const list = el('div');
+      const log = el('div');
+      const gw = async (payload) => {
+        const r = await fetch('/gw/pristup', payload === undefined ? {credentials: 'same-origin'} : {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json', 'X-Hub-Account': '1'},
+          body: JSON.stringify(payload),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(data.error || 'Server teď neodpovídá, zkus to za chvíli.');
+        return data;
+      };
+      const AKCE = {pridat: 'dostal(a) přístup', role: 'změna role', odebrat: 'přístup odebrán',
+                    vstup: 'vstoupil(a)', odchod: 'odešel/odešla', tab: 'otevřel(a) tab',
+                    zamitnuto: 'zamítnuto'};
+      let roles = [];
+      const roleSelect = (value) => {
+        const sel = el('select', 'set-input');
+        for (const r of roles) {
+          const o = el('option', null, r.label);
+          o.value = r.id;
+          if (r.id === value) o.selected = true;
+          sel.appendChild(o);
+        }
+        return sel;
+      };
+      const run = async (payload, okText) => {
+        try { await gw(payload); if (okText) io.toast(okText); } catch (e) { io.toast(e.message); }
+        draw();
+      };
+      async function draw() {
+        let d;
+        try { d = await gw(); } catch (e) { list.textContent = e.message; return; }
+        roles = d.role || [];
+        list.textContent = '';
+        if (!d.moje.length) list.appendChild(el('div', 'set-note', 'Zatím sem nikdo jiný nesmí.'));
+        for (const g of d.moje) {
+          const row = el('div', 'set-row');
+          row.appendChild(el('span', null, (g.name || g.email) + (g.name ? ' · ' + g.email : '') +
+                                           (g.online ? ' · právě tady' : '')));
+          const sel = roleSelect(g.role);
+          sel.onchange = () => run({akce: 'role', host: g.id, role: sel.value}, 'Role změněna.');
+          row.appendChild(sel);
+          const del = el('button', 'btn ghost', 'Odebrat');
+          del.onclick = () => run({akce: 'odebrat', host: g.id}, 'Přístup odebrán.');
+          row.appendChild(del);
+          list.appendChild(row);
+        }
+        const add = el('div', 'set-row');
+        const email = el('input', 'set-input');
+        email.type = 'email';
+        email.placeholder = 'e-mail účtu na téhle bráně';
+        const sel = roleSelect('predplatne');
+        const btn = el('button', 'btn primary', 'Přidat');
+        btn.onclick = () => {
+          if (!email.value.trim()) return io.toast('Vyplň e-mail.');
+          run({akce: 'pridat', email: email.value.trim(), role: sel.value}, 'Přístup přidán.');
+        };
+        add.append(email, sel, btn);
+        list.appendChild(add);
+        if (d.vse && d.vse.length) {
+          // Admin: všechny přístupy na bráně, jen k zobrazení a zrušení.
+          list.appendChild(el('div', 'set-title', 'Všechny přístupy na bráně'));
+          for (const a of d.vse) {
+            const row = el('div', 'set-row');
+            row.appendChild(el('span', null, `${a.host.name || a.host.email} → ${a.vlastnik.name || a.vlastnik.email} · ${a.label}`));
+            const del = el('button', 'btn ghost', 'Zrušit');
+            del.onclick = () => run({akce: 'odebrat', vlastnik: a.vlastnik.id, host: a.host.id}, 'Přístup zrušen.');
+            row.appendChild(del);
+            list.appendChild(row);
+          }
+        }
+        log.textContent = '';
+        if (d.zaznam && d.zaznam.length) {
+          log.appendChild(el('div', 'set-title', 'Záznam'));
+          for (const e of d.zaznam.slice(0, 30)) {
+            const what = [AKCE[e.akce] || e.akce, e.role ? '(' + e.role + ')' : '',
+                          e.nazev ? '„' + e.nazev + '“' : '', e.cesta || e.zprava || ''].filter(Boolean).join(' ');
+            log.appendChild(el('div', 'set-note', `${e.cas} · ${e.host_jmeno} · ${what}`));
+          }
+        }
+      }
+      wrap.append(list, log);
+      draw();
+      return wrap;
     }
 
     /* Zabezpečení na serveru: dvoufázové ověření a heslo. Mluví přímo s bránou

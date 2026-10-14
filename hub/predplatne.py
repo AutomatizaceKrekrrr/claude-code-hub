@@ -173,6 +173,12 @@ def _read_into(pty, buf):
 
 
 def _deliver(token, run_id):
+    if core.on_gateway():
+        # Spuštěno bránou pro Správu předplatného (host_action): token si
+        # brána vyzvedne sama a uloží ho stejně, jako když ho pošle appka.
+        _RUN["token"] = token
+        _set(state="token")
+        return
     _set(state="saving")
     gw = core.CONFIG.get("gw_token") or ""
     data, err, _kind = account._call("/gw/claude", token=gw, timeout=30,
@@ -221,6 +227,41 @@ def disconnect():
     gw = core.CONFIG.get("gw_token") or ""
     data, err, _kind = account._call("/gw/claude", token=gw, timeout=20, payload={"remove": True})
     return data if data is not None else {"error": err}
+
+
+# ── Správa předplatného hostem (gateway/pristup.py) ─────────────────────────
+def _public():
+    with _LOCK:
+        return {k: STATE[k] for k in ("state", "url", "error")}
+
+
+def host_action(action, payload, broadcast=None):
+    """Volá jen brána. Host vidí jen stav, odkaz a výsledek — token ani výstup
+    terminálu ven nejdou (kromě `vyzvednout`, to bere brána pro sebe)."""
+    if action == "stav":
+        return {**_public(), "account": core.claude_account()}
+    if action == "start":
+        if not claude_bin():
+            return {"state": "error", "url": "", "error": "V prostoru není Claude Code."}
+        start()
+        time.sleep(1.5)                  # ať se stihne objevit odkaz
+        return _public()
+    if action == "kod":
+        send_code(payload.get("code"))
+        return _public()
+    if action == "zrusit":
+        cancel()
+        return _public()
+    if action == "vyzvednout":
+        token = _RUN.pop("token", "")
+        if token:
+            _set(state="done", url="")
+        return {"token": token}
+    if action == "oznam":
+        if broadcast:
+            broadcast({"t": "host-oznameni", "text": str(payload.get("text") or "")[:300]})
+        return {"ok": True}
+    return {"error": "Neznámá akce."}
 
 
 # ── v prostoru na serveru ────────────────────────────────────────────────────

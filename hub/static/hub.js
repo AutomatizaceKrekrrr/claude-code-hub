@@ -70,6 +70,12 @@ async function api(path, body) {
     } catch (_) { /* není JSON */ }
     // Proxy před hubem (502/503/504, HTML stránka nginxu) = server se zrovna
     // restartuje; člověku patří věta, ne kus HTML.
+    // Host v cizím prostoru, kterému vlastník přístup odebral (gateway/pristup.py):
+    // brána už cookie smazala, stránka se načte znovu ve vlastním prostoru.
+    if (res.status === 403 && /"pristup":\s*"odebran"/.test(body)) {
+      toast('Přístup do tohohle prostoru ti byl odebrán.');
+      setTimeout(() => location.reload(), 1500);
+    }
     if ([502, 503, 504].includes(res.status) || /^\s*<(!doctype|html)/i.test(message)) {
       message = 'Server se právě restartuje, zkus to za chvíli.';
     }
@@ -2201,10 +2207,91 @@ function renderBranding() {
   try { window.webkit.messageHandlers.hubApp.postMessage('zmena'); } catch (_) { /* prohlížeč */ }
 }
 
+/* Přístup do cizího prostoru (gateway/pristup.py). Brána drží, kde host je,
+   v cookie; přepíná se POSTem na /gw/pristup a stránka se pak načte znovu. */
+async function pristupGw(payload) {
+  const r = await fetch('/gw/pristup', payload === undefined ? {credentials: 'same-origin'} : {
+    method: 'POST', credentials: 'same-origin',
+    headers: {'Content-Type': 'application/json', 'X-Hub-Account': '1'},
+    body: JSON.stringify(payload),
+  });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || 'Server teď neodpovídá, zkus to za chvíli.');
+  return data;
+}
+
+async function prostorJdi(ownerId) {
+  try {
+    await pristupGw(ownerId ? {akce: 'vstoupit', vlastnik: ownerId} : {akce: 'odejit'});
+    location.href = '/';
+  } catch (e) { toast(e.message); }
+}
+
+/* Klik na odznak v prostoru na serveru: nabídka „Prostory, kam máš přístup“
+   (a cesta zpátky na počítač, když okno z počítače přišlo). */
+async function placeMenu(ev) {
+  const b = ev.currentTarget.getBoundingClientRect();
+  let data = {kam: []};
+  try { data = await pristupGw(); } catch (e) { toast(e.message); }
+  const items = [];
+  if (STATE.guest) {
+    items.push({icon: 'i-hub', label: 'Zpět do svého prostoru', run: () => prostorJdi(0)});
+  } else if (window.HubServer && HubServer.localBack()) {
+    items.push({icon: 'i-laptop', label: 'Na tomto počítači', run: () => HubServer.backTo('local')});
+  }
+  for (const k of data.kam || []) {
+    if (STATE.guest && STATE.guest.owner === k.id) continue;
+    items.push({icon: 'i-user', label: `Prostor: ${k.name || k.email} · ${k.label}`,
+                run: () => prostorJdi(k.id)});
+  }
+  if (!items.length) {
+    toast('Do žádného cizího prostoru přístup nemáš. Pozvat tě může jeho vlastník v Nastavení → Účet → Přístup.');
+    return;
+  }
+  showMenu(b.left, b.bottom, items);
+}
+
+/* Pruh nahoře, když je host v cizím prostoru — ať je pořád jasné, čí je to. */
+function renderGuestBar() {
+  const g = STATE.guest;
+  document.documentElement.dataset.guest = g ? g.role : '';
+  let bar = $('guest-bar');
+  if (!g) { if (bar) bar.remove(); return; }
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.id = 'guest-bar';
+    bar.className = 'guest-bar';
+    document.body.prepend(bar);
+  }
+  bar.textContent = '';
+  const txt = document.createElement('span');
+  txt.textContent = `Prostor: ${g.owner_name || '?'} · ${g.label || g.role}`;
+  bar.appendChild(txt);
+  const back = document.createElement('button');
+  back.className = 'btn ghost';
+  back.textContent = 'Zpět do svého';
+  back.onclick = () => prostorJdi(0);
+  bar.appendChild(back);
+}
+
+/* Odznak „spravuje …“ u tabu, který otevřel host z jiného účtu. */
+function markGuest(tab, name) {
+  if (!tab || !tab.el || !name) return;
+  let span = tab.el.querySelector('.tab-guest');
+  if (!span) {
+    span = document.createElement('span');
+    span.className = 'tab-guest';
+    tab.el.querySelector('.tab-title').after(span);
+  }
+  span.textContent = 'spravuje ' + name;
+  span.title = name + ' sem přišel/přišla přes přístup do tvého prostoru';
+}
+
 function renderPlace() {
   const badge = $('btn-place');
   if (!badge) return;
   const u = STATE.config.gateway_user;
+  renderGuestBar();
   const app = STATE.app || {};
   const shown = app.shown || 'Paluba';
   document.title = titulekOkna(app.name ? app.name : shown + ' ' + placeName());
@@ -2213,15 +2300,19 @@ function renderPlace() {
   renderBranding();
   // Barva celé appky se odvozuje odsud: počítač jantarově, prostor modře.
   document.documentElement.dataset.place = u ? 'server' : 'pc';
-  badge.textContent = u ? 'Server' : 'PC';
+  badge.textContent = STATE.guest
+    ? `Prostor: ${STATE.guest.owner_name || '?'} · ${STATE.guest.label || ''}`
+    : u ? 'Server' : 'PC';
+  badge.classList.toggle('guest', !!STATE.guest);
   badge.setAttribute('aria-label', shown + ' ' + placeName());
   badge.classList.toggle('on-server', !!u);
   /* Přepnout jde jen z appky: okno v prohlížeči se na počítač vrátit nemá kam.
      Tam je odznak pouhá cedulka — po kliknutí se nestane nic a netváří se, že
      by mělo. Dřív otvíral nastavení, což s nápisem „server" nesouvisí. */
   const lzePrepnout = !u || !!(window.HubServer && HubServer.localBack());
-  badge.classList.toggle('plain', !lzePrepnout);
-  badge.onclick = lzePrepnout ? switchPlace : null;
+  // Na serveru vede odznak i do cizích prostorů, kam má člověk přístup.
+  badge.classList.toggle('plain', false);
+  badge.onclick = u ? placeMenu : switchPlace;
   badge.title = u
     ? `Pracuješ na serveru · ${u.name || u.email}` +
       (lzePrepnout ? ' — klikni a přepneš na počítač' : '')
@@ -3808,6 +3899,7 @@ function handle(msg) {
       if (tab === ACTIVE) document.dispatchEvent(new CustomEvent('hub-tab', {detail: {id: tab.id, title: tab.title, path: tab.path || ''}}));
       tab.bypass = !!msg.bypass;
       tab.chat = msg.chat || tab.chat || '';
+      if (msg.guest) markGuest(tab, msg.guest);
       // Server mohl model doplnit sám (Ollama bez modelu nespustíš), tak se
       // tím, co doopravdy běží, přepíše i to, s čím se tab zakládal.
       if (msg.model && msg.model !== tab.model) {
@@ -3839,6 +3931,10 @@ function handle(msg) {
                            id: msg.id, agent: msg.agent, model: msg.model,
                            bypass: msg.bypass, resume: msg.resume,
                            vault: msg.vault, background: true}));
+      if (msg.guest) {
+        markGuest(TABS.find(t => t.id === msg.id), msg.guest);
+        if (!STATE.guest) toast(`${msg.guest} otevřel(a) ve tvém prostoru tab „${msg.title}“.`);
+      }
     }
   } else if (msg.t === 'tab-closed') {
     const tab = TABS.find(t => t.id === msg.id);
@@ -3849,9 +3945,15 @@ function handle(msg) {
   } else if (msg.t === 'sessions') {
     if (staleVersion(msg.version)) return;
     restore(msg.list);
+    for (const s of msg.list) if (s.guest) markGuest(TABS.find(t => t.id === s.id), s.guest);
     // Prázdný seznam = čerstvě nastartovaný server. Když se restartoval kvůli
     // aktualizaci, leží tu po něm uložené taby (hub/restart.py).
     if (!msg.list.length) restoreAfterRestart();
+  } else if (msg.t === 'host-oznameni') {
+    // Co udělal host se Správou předplatného (gateway/pristup.py).
+    if (!STATE.guest && msg.text) toast(msg.text);
+  } else if (msg.t === 'host-vstup') {
+    if (!STATE.guest) toast(`${msg.name} vstoupil(a) do tvého prostoru (${msg.role}).`);
   } else if (msg.t === 'memory-saved') {
     memorySaved(msg);
   } else if (msg.t === 'prenos-prijat') {
@@ -3900,6 +4002,8 @@ function tabyWord(n) {
  * u Clauda s `--resume`, takže konverzace pokračuje tam, kde skončila.
  * Soubor se čte jednou (server ho při čtení maže), tohle je jen pojistka. */
 async function restoreAfterRestart() {
+  // Host v cizím prostoru obnovu vlastníkovi nesní (brána ji stejně nepustí).
+  if (STATE && STATE.guest) return;
   if (restartRestored) return;
   restartRestored = true;
   let tabs = [];

@@ -118,6 +118,30 @@ def read_frame(rfile):
     return bool(fin), opcode, payload
 
 
+# ── Host v cizím prostoru (gateway/pristup.py) ──────────────────────────────
+def guest_from(headers):
+    """Kdo je host, jak ho brána ohlásila v X-Hub-Guest — jen v prostoru na
+    serveru. Brána tu hlavičku z příchozích požadavků vždycky zahodí a vloží
+    vlastní, takže jí tady jde věřit; na počítači se nebere vůbec."""
+    raw = headers.get("X-Hub-Guest", "") if headers else ""
+    if not raw or not core.on_gateway():
+        return None
+    try:
+        data = json.loads(base64.urlsafe_b64decode(raw.encode("ascii")).decode("utf-8"))
+        data["id"] = int(data["id"])
+    except (ValueError, KeyError, TypeError):
+        return None
+    if data.get("role") not in ("predplatne", "pomocnik", "plny"):
+        return None
+    return data
+
+
+def guest_owns(guest, session):
+    """Je tab hostův? (Správa předplatného smí jen na své.)"""
+    g = getattr(session, "guest", None) if session else None
+    return bool(g and guest and g.get("id") == guest.get("id"))
+
+
 # ── Terminal sessions ────────────────────────────────────────────────────────
 class Session:
     """A pty running one bash session, plus the scrollback we replay on reload."""
@@ -147,6 +171,9 @@ class Session:
         # u pokračování je to ta, ve které se pokračuje — čtení (cteni.py) pak
         # ví, který přepis číst, aniž by ho hledalo podle času souborů.
         self.chat_id = (env or {}).get("HUB_SESSION_ID", "") or self.resume
+        # Kdo tab otevřel, když to byl host z jiného účtu (guest_from) — u tabu
+        # se ukáže „spravuje …“.
+        self.guest = None
         child = core.child_env()
         child.update(env or {})
         self.pty = pty_backend.spawn(argv, cwd=cwd, env=child,
@@ -262,7 +289,8 @@ class Session:
                 "path": self.path, "exited": self.exited,
                 "agent": self.agent, "model": self.model, "bypass": self.bypass,
                 "resume": self.resume, "vault": self.vault,
-                "chat": getattr(self, "chat_id", "") or self.resume or ""}
+                "chat": getattr(self, "chat_id", "") or self.resume or "",
+                "guest": (self.guest or {}).get("name") or (self.guest or {}).get("email") or ""}
 
 
 class Hub:
@@ -644,6 +672,18 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api_inner(self, name, query, payload=None):
         payload = payload or {}
+        guest = guest_from(self.headers)
+        if guest and guest.get("role") == "predplatne":
+            # Správa předplatného do hubu nesmí vůbec — mluví jen s bránou
+            # (/gw/pristup/predplatne), ta volá predplatne-host sama.
+            return self._json({"error": "Nepovoleno."}, 403)
+        if name == "predplatne-host":
+            # Správa předplatného hostem (gateway/pristup.py). Volá jen brána
+            # přímo, z prohlížeče se sem nedostane (brána cestu blokuje).
+            if guest or not core.on_gateway():
+                return self._json({"error": "Nepovoleno."}, 403)
+            return self._json(predplatne.host_action(str(payload.get("action") or ""), payload,
+                                                     HUB.broadcast))
         if name == "app-vzhled":
             # Vlastní název a ikona appky (hub/vzhled.py, Nastavení → Vzhled).
             if self.command != "POST":
@@ -910,6 +950,9 @@ class Handler(BaseHTTPRequestHandler):
                 "vault_autosync": bool(core.CONFIG.get("vault_autosync")),
                 "memory_autosave": core.autosave_enabled(),
                 "autosave_recent": part("poslední uložení", core.autosave_recent, []),
+                # Host z jiného účtu (gateway/pristup.py): stránka ukáže pruh
+                # „Prostor: … · role“ a tlačítko zpátky do svého.
+                "guest": guest_from(self.headers),
             })
         # Náhled trezoru Obsidian (vault.js) — jen ke čtení, jen uvnitř trezoru.
         # `vault=firma` je společný firemní Obsidian (na bráně), jinak osobní.
@@ -1624,6 +1667,11 @@ class Handler(BaseHTTPRequestHandler):
     def _websocket(self, query):
         if not self._authorised(query) or not self._origin_ok():
             return self._send(403, b"Neplatny token.")
+        guest = guest_from(self.headers)
+        if guest and guest.get("role") == "predplatne":
+            # Správa předplatného terminál ani Clauda nedostane (druhá hráz
+            # za bránou, gateway/pristup.py).
+            return self._send(403, b"Nepovoleno.")
         key = self.headers.get("Sec-WebSocket-Key", "")
         if not key:
             return self._send(400, b"Neni websocket.")
@@ -1637,6 +1685,7 @@ class Handler(BaseHTTPRequestHandler):
         self.close_connection = True  # we own the socket from here on
 
         conn = WSConn(self.connection)
+        conn.guest = guest_from(self.headers)
         HUB.clients += 1
         HUB.conns.add(conn)
         HUB.last_empty_at = None
@@ -1684,12 +1733,24 @@ class Handler(BaseHTTPRequestHandler):
         kind = msg.get("t")
         sid = msg.get("id")
         session = HUB.sessions.get(sid)
+        guest = getattr(conn, "guest", None)
+        if guest and guest.get("role") not in ("pomocnik", "plny"):
+            return
+        if guest and guest.get("role") == "pomocnik" and kind == "close" \
+                and session and not guest_owns(guest, session):
+            # Pomocník nezavírá vlastníkovi rozdělanou práci.
+            conn.send_json({"t": "error", "d": "Cizí tab zavřít nemůžeš."})
+            return
 
         if kind == "hello":
             # Verze: stránka po aktualizaci serveru jen znovu připojí websocket
             # a jela by se starým JavaScriptem — podle tohohle se načte znovu.
             conn.send_json({"t": "sessions", "version": core.version(),
                             "list": [s.info() for s in HUB.sessions.values()]})
+            if guest and not getattr(conn, "ohlaseno", False):
+                conn.ohlaseno = True
+                HUB.broadcast({"t": "host-vstup", "name": guest.get("name") or guest.get("email"),
+                               "role": guest.get("label") or guest.get("role")}, skip=conn)
         elif kind == "open":
             try:
                 session = HUB.open(msg.get("kind", "project"), msg.get("path", ""),
@@ -1712,6 +1773,9 @@ class Handler(BaseHTTPRequestHandler):
                 conn.send_json({"t": "error", "ref": msg.get("ref"),
                                 "d": f"Nepodařilo se otevřít terminál: {exc}"})
                 return
+            if guest:
+                session.guest = {"id": guest["id"], "name": guest.get("name") or "",
+                                 "email": guest.get("email") or ""}
             core.log(f"tab otevřen: {session.kind} {session.path or '~'}"
                      + (f" [{session.agent}]" if session.agent else ""))
             conn.send_json({"t": "opened", "ref": msg.get("ref"), **session.info()})

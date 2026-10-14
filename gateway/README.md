@@ -688,6 +688,24 @@ píše — zpráva dojde do chatu majitele s jeho jménem v hranatých závorká
 * **Právo psát je právo zadávat práci majitelovu Claudovi s jeho oprávněními** (i v režimu
   bez ptaní). Výchozí je jen čtení; psát dávej jen lidem, kterým to svěříš.
 
+## Přístup do cizího prostoru
+
+Vlastník v Nastavení → Účet → **Přístup** pustí jiný účet z téže brány do svého
+prostoru s rolí: **Správa předplatného** (do hubu vlastníka vůbec — žádný terminál
+ani Claude; brána mu dá vlastní stránku a `/gw/pristup/predplatne`: stav,
+připojení vlastního předplatného přes `claude setup-token` spuštěný skrytě
+v hubu vlastníka, kód ze stránky, odpojení zpět na firemní; token si z hubu
+vyzvedne brána a host ho nevidí), **Pomocník**
+(práce v prostoru bez mazání a bez nastavení, napojení a účtu) a **Plný
+přístup** (jako vlastník v hubu). Host přepne odznakem prostoru v liště;
+brána si cíl drží v HttpOnly cookie `gw_prostor` a při **každém** požadavku
+ověří řádek v `space_access` — odebrání platí hned a otevřený websocket se
+zavře. Role se vynucuje na bráně (`gateway/pristup.py`: whitelist / blacklist
+`/api/…` a filtr zpráv websocketu), hub ji z hlavičky `X-Hub-Guest` (vkládá
+jen brána, zvenku se zahazuje) hlídá ještě jednou a u tabu ukáže „spravuje …“.
+Heslo, 2FA, passkeys a přístupy jdou přes `/gw/…` vždycky za přihlášeným, host
+na vlastníkovy nedosáhne. Záznam: `GATEWAY_DIR/pristup.jsonl`.
+
 ## Přenos chatu mezi počítačem a serverem
 
 Chat jde poslat z počítače na server a zpátky a pokračovat v něm na druhé straně

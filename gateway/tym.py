@@ -16,7 +16,7 @@ import os
 import secrets
 import time
 
-from . import config, poznamky, workspace
+from . import config, poznamky, pristup, workspace
 
 LOG = os.path.join(config.GATEWAY_DIR, "tym.jsonl")
 
@@ -122,6 +122,8 @@ def act(accounts, admin, form, hubs=None):
         if on and row["id"] == admin["id"]:
             raise ValueError("Sám sebe zablokovat nejde.")
         accounts.set_disabled(email, on)
+        if on:
+            pristup.forget_user(row["id"])       # pryč i z cizích prostorů
         if on and hubs:
             hubs.restart({"id": row["id"]})      # zastavit jeho prostor hned
         _log(admin, email, "zablokovat" if on else "odblokovat")

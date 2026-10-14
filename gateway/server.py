@@ -33,8 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from hub import __version__, qr
 
 from . import webauthn
-from . import (config, isolation, mcp, mcp_sdilene, pocitac, poznamky, relace, safefs, shared, slozky, totp,
-               workspace)
+from . import (config, isolation, mcp, mcp_sdilene, pocitac, poznamky, pristup, relace, safefs, shared, slozky,
+               totp, workspace)
 from .accounts import Accounts
 
 HTML = "text/html; charset=utf-8"
@@ -517,6 +517,71 @@ background:#e0a458;color:#1a1710;font-weight:600;text-decoration:none}
 """ + body + "</html>").encode("utf-8")
 
 
+def predplatne_page(owner):
+    """Správa předplatného pro hosta — místo hubu vlastníka (gateway/pristup.py)."""
+    who = html.escape(owner.get("name") or owner.get("email") or "")
+    return _page("Správa předplatného — Paluba", f"""
+<div class="card wide">
+<h1>Správa předplatného</h1>
+<p class=sub>Prostor: {who} · jen nastavení Claude, nic dalšího.</p>
+<div id=stav class=hint>Zjišťuji…</div>
+<div id=login hidden>
+<p class=hint>1. Otevři odkaz, přihlas se účtem Claude a potvrď. 2. Kód ze stránky vlož sem.</p>
+<a id=odkaz class=button target=_blank rel=noopener>Otevřít přihlášení Claude</a>
+<label for=kod>Kód ze stránky</label><input id=kod autocomplete=off>
+<button id=poslat>Odeslat kód</button>
+<button id=zrusit style="background:#3a3524;color:#e8e3d3">Zrušit</button>
+</div>
+<button id=prihlasit>Připojit vlastní předplatné</button>
+<button id=odpojit style="background:#3a3524;color:#e8e3d3">Odpojit (zpět na firemní)</button>
+<div id=err class=err></div>
+<button id=zpet style="background:none;border:1px solid #3a3524;color:#c8c0a8">Zpět do svého prostoru</button>
+</div>
+<script>
+const $ = (i) => document.getElementById(i);
+const REZIM = {{predplatne: 'vlastní předplatné', api: 'firemní přístup (klíč API)',
+  ucet: 'přihlášený účet v prostoru', zadne: 'Claude není přihlášený'}};
+async function gw(path, data) {{
+  const r = await fetch(path, data === undefined ? {{credentials: 'same-origin'}} : {{
+    method: 'POST', credentials: 'same-origin',
+    headers: {{'Content-Type': 'application/json', 'X-Hub-Account': '1'}},
+    body: JSON.stringify(data)}});
+  const d = await r.json().catch(() => ({{}}));
+  if (d.pristup === 'odebran') location.href = '/';
+  if (!r.ok) throw new Error(d.error || 'Server neodpovídá.');
+  return d;
+}}
+let timer = null;
+function kresli(d) {{
+  const u = d.ucet || {{}}, p = d.prihlaseni || {{}};
+  $('stav').textContent = 'Režim: ' + (REZIM[d.rezim.mode] || d.rezim.mode) +
+    (u.email ? ' · účet ' + u.email + (u.plan ? ' (' + u.plan + ')' : '') : '') +
+    (d.needs_restart ? ' · projeví se po restartu prostoru' : '');
+  const bezi = p.state === 'starting' || p.state === 'waiting' || p.state === 'token';
+  $('login').hidden = !bezi;
+  $('prihlasit').hidden = bezi;
+  $('odpojit').hidden = bezi || d.rezim.mode !== 'predplatne';
+  if (p.url) $('odkaz').href = p.url;
+  $('odkaz').hidden = !p.url;
+  $('err').textContent = p.state === 'error' ? p.error : (p.state === 'done' ? 'Hotovo — předplatné je připojené.' : '');
+  clearTimeout(timer);
+  if (bezi) timer = setTimeout(nacti, 2000);
+}}
+async function nacti() {{ try {{ kresli(await gw('/gw/pristup/predplatne')); }} catch (e) {{ $('err').textContent = e.message; }} }}
+async function akce(a, extra) {{
+  $('err').textContent = '';
+  try {{ kresli(await gw('/gw/pristup/predplatne', {{akce: a, ...(extra || {{}})}})); }}
+  catch (e) {{ $('err').textContent = e.message; }}
+}}
+$('prihlasit').onclick = () => akce('prihlasit');
+$('poslat').onclick = () => {{ akce('kod', {{kod: $('kod').value.trim()}}); $('kod').value = ''; }};
+$('zrusit').onclick = () => akce('zrusit');
+$('odpojit').onclick = () => akce('odpojit');
+$('zpet').onclick = async () => {{ await gw('/gw/pristup', {{akce: 'odejit'}}).catch(() => {{}}); location.href = '/'; }};
+nacti();
+</script>""")
+
+
 def error_page(message):
     """Chyba, kterou uvidí člověk v prohlížeči — věta a tlačítko zkusit znovu."""
     return _page("Chvilku strpení — Paluba", f"""
@@ -901,6 +966,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._gw_relace(route, method, user)
             if route == "/gw/tym":
                 return self._gw_team(method, user)
+            if route == "/gw/pristup":
+                return self._gw_pristup(method, user)
+            if route == "/gw/pristup/predplatne":
+                return self._gw_pristup_predplatne(method, user)
             if route == "/gw/spotreba":
                 return self._gw_spotreba(method, user)
             if route == "/gw/mcp-sdilene":
@@ -919,8 +988,12 @@ class Handler(BaseHTTPRequestHandler):
 
             # Nástroje pro appku Claude volá v instanci jen brána sama — přes
             # proxy z prohlížeče se k nim nikdo nedostane.
-            if route.startswith("/api/mcp-tool"):
+            if route.startswith("/api/mcp-tool") or route.startswith("/api/predplatne-host"):
                 return self._send(404, b"404")
+            # Host v cizím prostoru (gateway/pristup.py): povolení se ověřuje
+            # při každém požadavku, role rozhoduje, kam smí.
+            if self._cookies().get(pristup.COOKIE):
+                return self._proxy_guest(method, user, route, parsed.query)
             # Přihlášený → všechno ostatní jde do jeho instance hubu.
             return self._proxy(method, user)
         except BrokenPipeError:
@@ -1815,6 +1888,193 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         except ValueError as exc:
             return self._json({"error": str(exc)}, 400)
 
+    # ---- přístup do cizího prostoru (gateway/pristup.py) ----
+    def _space_cookie(self, owner_id=None):
+        flags = "; Secure" if self._https() else ""
+        if owner_id is None:
+            return f"{pristup.COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0{flags}"
+        return (f"{pristup.COOKIE}={int(owner_id)}; Path=/; HttpOnly; SameSite=Lax; "
+                f"Max-Age={config.SESSION_MAX_AGE}{flags}")
+
+    def _space_here(self, user):
+        """(vlastník, role) prostoru, kde host právě je, nebo None."""
+        raw = self._cookies().get(pristup.COOKIE, "")
+        if not raw.isdigit():
+            return None
+        role = self.accounts.access_role(int(raw), user["id"])
+        owner = self.accounts.by_id(int(raw)) if role else None
+        return (owner, role) if owner else None
+
+    def _gw_pristup(self, method, user):
+        """Nastavení → Účet → Přístup a přepínání prostorů v liště.
+
+        Vlastník je vždycky přihlášený člověk — host si tudy přístup do cizího
+        prostoru přidat nemůže, jen do svého. Změny jen ze stránky (CSRF)."""
+        if method == "GET":
+            here = self._space_here(user)
+            tady = None
+            if here:
+                owner, role = here
+                tady = {"id": owner["id"], "name": owner.get("name") or "",
+                        "email": owner["email"], "role": role, "label": pristup.label(role)}
+            return self._json(pristup.overview(self.accounts, user, tady))
+        if method != "POST":
+            return self._json({"error": "Jen GET nebo POST."}, 405)
+        form = self._read_form()
+        if not self._account_post_ok():
+            return self._json({"error": "Přístupy jdou měnit jen v aplikaci."}, 403)
+        akce = str(form.get("akce") or "")
+        if akce == "vstoupit":
+            try:
+                owner_id = int(form.get("vlastnik"))
+            except (TypeError, ValueError):
+                return self._json({"error": "Neznámý prostor."}, 400)
+            role = self.accounts.access_role(owner_id, user["id"])
+            owner = self.accounts.by_id(owner_id) if role else None
+            if not owner:
+                return self._json({"error": "Do tohohle prostoru přístup nemáš."}, 403)
+            pristup.log(owner_id, user["id"], "vstup", role=role)
+            self._owner_notice(owner, f"{user.get('name') or user['email']} vstoupil(a) do tvého "
+                               f"prostoru ({pristup.label(role)}).")
+            return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8",
+                              extra={"Set-Cookie": self._space_cookie(owner_id)})
+        if akce == "odejit":
+            raw = self._cookies().get(pristup.COOKIE, "")
+            if raw.isdigit():
+                pristup.log(int(raw), user["id"], "odchod")
+                pristup.LIVE.kick(int(raw), user["id"])
+            return self._send(200, json.dumps({"ok": True}), "application/json; charset=utf-8",
+                              extra={"Set-Cookie": self._space_cookie()})
+        try:
+            return self._json(pristup.act(self.accounts, user, form))
+        except PermissionError as exc:
+            return self._json({"error": str(exc)}, 403)
+        except ValueError as exc:
+            return self._json({"error": str(exc)}, 400)
+
+    def _proxy_guest(self, method, user, route, query):
+        """Požadavek hosta do cizího prostoru — jen s platným povolením a jen
+        tam, kam role pustí. Bez povolení se cookie smaže a host je doma."""
+        here = self._space_here(user)
+        if not here:
+            raw = self._cookies().get(pristup.COOKIE, "")
+            if raw.isdigit():
+                pristup.LIVE.kick(int(raw), user["id"])
+            clear = {"Set-Cookie": self._space_cookie()}
+            if method == "GET" and "text/html" in self.headers.get("Accept", "") \
+                    and "websocket" not in self.headers.get("Upgrade", "").lower():
+                return self._redirect("/", extra=clear)
+            body = json.dumps({"error": "Přístup do tohohle prostoru už nemáš.",
+                               "pristup": "odebran"}, ensure_ascii=False)
+            return self._send(403, body, "application/json; charset=utf-8", extra=clear)
+        owner, role = here
+        if role == "predplatne" and method == "GET" and route == "/" \
+                and "websocket" not in self.headers.get("Upgrade", "").lower():
+            # Správa předplatného nedostane hub vlastníka, jen stránku brány.
+            return self._send(200, predplatne_page(owner), HTML)
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        why = pristup.http_denied(role, method, route, query, body or b"")
+        if why:
+            pristup.log(owner["id"], user["id"], "zamitnuto", cesta=route[:80], metoda=method)
+            return self._json({"error": why, "pristup": "role"}, 403)
+        try:
+            hub = self.hubs.get(owner)
+        except RuntimeError as exc:
+            _errlog("proxy start (host)", exc)
+            return self._fail(503, MSG_FULL if "plný" in str(exc) else MSG_STARTING)
+        hub.touch()
+        extra = {pristup.GUEST_HEADER: pristup.guest_header(user, owner, role)}
+        if "websocket" in self.headers.get("Upgrade", "").lower():
+            return self._proxy_ws(hub, extra=extra, guest=(owner, user, role))
+        return self._proxy_http(method, hub, body=body, extra=extra, guest=True)
+
+    def _hub_call(self, hub, name, payload, timeout=20):
+        """Brána volá hub prostoru napřímo (ne z prohlížeče) — jeho tokenem."""
+        conn = http.client.HTTPConnection("127.0.0.1", hub.port, timeout=timeout)
+        try:
+            conn.request("POST", "/api/" + name, body=json.dumps(payload).encode("utf-8"),
+                         headers={"X-Hub-Token": hub.token, "Content-Type": "application/json"})
+            resp = conn.getresponse()
+            data = json.loads(resp.read() or b"{}")
+            return data if resp.status == 200 else {"error": data.get("error") or "Prostor odmítl."}
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            _errlog("hub_call " + name, exc)
+            return {"error": "Prostor teď neodpovídá, zkus to za chvíli."}
+        finally:
+            conn.close()
+
+    def _owner_notice(self, owner, text):
+        """Toast vlastníkovi — jen když jeho prostor běží (nebudí ho kvůli tomu)."""
+        proc = self.hubs.procs.get(owner["id"]) if self.hubs else None
+        if proc and proc.alive():
+            self._hub_call(proc, "predplatne-host", {"action": "oznam", "text": text}, timeout=5)
+
+    def _gw_pristup_predplatne(self, method, user):
+        """Správa předplatného hostem: jediné, co role `predplatne` v cizím
+        prostoru smí. Přihlášení (`claude setup-token`) běží skrytě v hubu
+        vlastníka; host vidí jen stav, odkaz a výsledek. Token si brána
+        vyzvedne z hubu a uloží stejně jako předplatné připojené z appky."""
+        here = self._space_here(user)
+        if not here or here[1] not in ("predplatne", "plny"):
+            return self._json({"error": "Do tohohle prostoru přístup nemáš.",
+                               "pristup": "odebran"}, 403)
+        owner, role = here
+        jmeno = user.get("name") or user["email"]
+        if method == "POST":
+            form = self._read_form()
+            if not self._account_post_ok():
+                return self._json({"error": "Jde to jen ze stránky."}, 403)
+            akce = str(form.get("akce") or "")
+            if akce not in pristup.PREDPLATNE_AKCE:
+                pristup.log(owner["id"], user["id"], "zamitnuto", akce_hosta=akce[:30])
+                return self._json({"error": "Tohle Správa předplatného nesmí."}, 403)
+            if akce == "odpojit":
+                # Stejné jako „Odpojit“ u vlastníka: zpátky na firemní přístup.
+                workspace.remove_predplatne(owner)
+                self.hubs.stop_idle(owner["id"])
+                pristup.log(owner["id"], user["id"], "predplatne-odpojit")
+                self._owner_notice(owner, f"{jmeno} odpojil(a) vlastní předplatné — Claude jede zase přes firmu.")
+            else:
+                try:
+                    hub = self.hubs.get(owner)
+                except RuntimeError as exc:
+                    return self._json({"error": str(exc)}, 503)
+                action = {"prihlasit": "start", "kod": "kod", "zrusit": "zrusit"}[akce]
+                out = self._hub_call(hub, "predplatne-host",
+                                     {"action": action, "code": str(form.get("kod") or "")[:500]})
+                pristup.log(owner["id"], user["id"], "predplatne-" + akce)
+                if out.get("error") and not out.get("state"):
+                    return self._json({"error": out["error"]}, 502)
+        return self._json(self._predplatne_stav(owner, user, jmeno))
+
+    def _predplatne_stav(self, owner, user, jmeno):
+        state = workspace.claude_state(owner)
+        state.pop("label", None)
+        out = {"vlastnik": owner.get("name") or owner["email"], "rezim": state,
+               "prihlaseni": {"state": "idle", "url": "", "error": ""}, "ucet": {}}
+        proc = self.hubs.procs.get(owner["id"]) if self.hubs else None
+        if proc and proc.alive():
+            st = self._hub_call(proc, "predplatne-host", {"action": "stav"}, timeout=10)
+            out["ucet"] = st.get("account") or {}
+            out["prihlaseni"] = {k: st.get(k, "") for k in ("state", "url", "error")}
+            if st.get("state") == "token":
+                token = self._hub_call(proc, "predplatne-host", {"action": "vyzvednout"}).get("token")
+                try:
+                    workspace.save_predplatne(owner, token, f"Správa předplatného: {jmeno}"[:80])
+                    out["prihlaseni"] = {"state": "done", "url": "", "error": ""}
+                    pristup.log(owner["id"], user["id"], "predplatne-pripojeno")
+                    self._owner_notice(owner, f"{jmeno} připojil(a) tvé vlastní předplatné Claude — "
+                                       "projeví se po restartu prostoru.")
+                except ValueError as exc:
+                    out["prihlaseni"] = {"state": "error", "url": "", "error": str(exc)}
+                del token
+                state = workspace.claude_state(owner)
+                state.pop("label", None)
+                out["rezim"] = state
+            out["needs_restart"] = proc.auth_mark != workspace.auth_mark(owner)
+        return out
+
     def _gw_spotreba(self, method, user):
         """Statistiky → Tým: spotřeba po lidech. Admin vidí všechny a nastavuje
         týdenní strop, ostatní jen sebe (a jestli jsou u svého stropu)."""
@@ -2220,15 +2480,19 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
     def _forward_headers(self, hub, extra=None):
         out = {}
         for key in self.headers.keys():
-            if key.lower() in HOP_BY_HOP:
+            if key.lower() in HOP_BY_HOP or key.lower() == "x-hub-token":
                 continue
             out[key] = self.headers.get(key)
+        # Identitu hosta (gateway/pristup.py) vkládá jen brána — co přijde
+        # zvenku, zahodit, ať se nikdo nevydává za hosta ani za vlastníka.
+        pristup.strip_guest_headers(out)
         # Přihlašovací cookie brány do prostoru nepatří: běží v něm Claude
         # a s ní by si mohl sám potvrdit třeba nahrání do firemního Obsidianu.
         # Hub se ověřuje tokenem X-Hub-Token, cookie brány nepotřebuje.
         for key in [k for k in out if k.lower() == "cookie"]:
             kept = [c.strip() for c in out[key].split(";")
                     if c.strip() and c.split("=", 1)[0].strip() != config.SESSION_COOKIE]
+            kept = [c for c in kept if c.split("=", 1)[0].strip() != pristup.COOKIE]
             if kept:
                 out[key] = "; ".join(kept)
             else:
@@ -2243,10 +2507,11 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         out.update(extra or {})
         return out
 
-    def _proxy_http(self, method, hub):
-        length = int(self.headers.get("Content-Length") or 0)
-        body = self.rfile.read(length) if length else None
-        headers = self._forward_headers(hub)
+    def _proxy_http(self, method, hub, body=None, extra=None, guest=False):
+        if body is None:
+            length = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(length) if length else None
+        headers = self._forward_headers(hub, extra)
         idempotent = method in ("GET", "HEAD", "OPTIONS")
         resp = data = last = None
         proud = None
@@ -2300,6 +2565,12 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
             if low == "set-cookie":
                 continue
             self.send_header(key, value)
+        if guest and urllib.parse.urlsplit(self.path).path.startswith("/api/"):
+            # Soubory z cizího prostoru (poznámky, obrázky) běží na stejném
+            # původu jako brána — host s nimi nesmí spustit cizí skript.
+            self.send_header("Content-Security-Policy",
+                             "default-src 'none'; img-src 'self' data:; "
+                             "style-src 'unsafe-inline'; sandbox")
         if proud is not None:
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("Connection", "close")
@@ -2322,7 +2593,7 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         if data and self.command != "HEAD":
             self.wfile.write(data)
 
-    def _proxy_ws(self, hub):
+    def _proxy_ws(self, hub, extra=None, guest=None):
         """Průhledný tunel WebSocketu mezi prohlížečem a instancí hubu.
 
         Handshake se přepošle beze změny (klíč klienta → stejný accept od
@@ -2337,7 +2608,7 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         # Sestav upgrade požadavek pro hub z hlaviček klienta + token.
         head = [f"GET {self.path} HTTP/1.1"]
         for key, value in self._forward_headers(
-                hub, {"Connection": "Upgrade", "Upgrade": "websocket"}).items():
+                hub, {"Connection": "Upgrade", "Upgrade": "websocket", **(extra or {})}).items():
             head.append(f"{key}: {value}")
         up.sendall(("\r\n".join(head) + "\r\n\r\n").encode("latin-1"))
 
@@ -2357,9 +2628,35 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         # prostor s otevřeným prohlížečem se kvůli místu neuspává.
         hub.conns += 1
         try:
-            _pump_both(client, up, on_client=hub.touch)
+            if guest:
+                self._pump_guest(client, up, hub, guest)
+            else:
+                _pump_both(client, up, on_client=hub.touch)
         finally:
             hub.conns -= 1
+
+    def _pump_guest(self, client, up, hub, guest):
+        """Tunel hosta: zprávy do hubu přes filtr role, povolení se ověřuje
+        průběžně a odebrání spojení zavře (pristup.LIVE)."""
+        owner, user, role = guest
+        key = (owner["id"], user["id"])
+        accounts = self.accounts
+
+        def opened(msg):
+            pristup.log(owner["id"], user["id"], "tab", druh=str(msg.get("kind") or "project")[:40],
+                        nazev=str(msg.get("title") or "")[:60])
+
+        def denied(msg, why):
+            kind = msg.get("t") if isinstance(msg, dict) else "?"
+            pristup.log(owner["id"], user["id"], "zamitnuto", zprava=str(kind)[:20])
+
+        flt = pristup.WsFilter(role, lambda: accounts.access_role(*key),
+                               on_open=opened, on_denied=denied)
+        pristup.LIVE.add(key, client)
+        try:
+            pristup.pump_guest(client, up, flt, on_client=hub.touch)
+        finally:
+            pristup.LIVE.drop(key, client)
 
     # BaseHTTPRequestHandler používá tyhle pro neznámé metody; ať projdou.
     def do_PATCH(self):
