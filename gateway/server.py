@@ -1022,34 +1022,17 @@ class Handler(BaseHTTPRequestHandler):
         return self.accounts.by_id(uid) if uid else None
 
     def _pwa_user_manifest(self, query):
-        from hub import vzhled
-        pid = (urllib.parse.parse_qs(query).get("u") or [""])[0]
-        user = self._pwa_user(pid)
-        if not user:
-            return self._pwa_file("/manifest.webmanifest")
-        name, home = workspace.app_look(user)
-        icon = safefs.lstat(home, ".claude/hub-ikona-512.png")
-        version = int(icon.st_mtime) if icon else 0
-        base = f"/app-ikona/{pid}/" if icon else "/icon-"
-        data = vzhled.manifest(name or vzhled.VYCHOZI, base, version)
-        if not icon:        # výchozí ikony se jmenují icon-<velikost>.png
-            for i in data["icons"]:
-                i["src"] = i["src"].split("?")[0]
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self._send(200, body, "application/manifest+json", {"Cache-Control": "no-cache"})
+        # Název a ikona jsou pro všechny stejné (hub/vzhled.py) — dřív uložené
+        # vlastní se už nečtou. Adresy s kódem účtu zůstávají kvůli appkám,
+        # které už jsou na ploše nainstalované.
+        return self._pwa_file("/manifest.webmanifest")
 
     def _pwa_user_icon(self, route):
         import re as _re
         m = _re.fullmatch(r"/app-ikona/([0-9a-f]{24})/(512|192|32)\.png", route)
-        user = self._pwa_user(m.group(1)) if m else None
-        if not user:
+        if not m:
             return self._send(404, b"404")
-        _name, home = workspace.app_look(user)
-        png = safefs.read_bytes(home, f".claude/hub-ikona-{m.group(2)}.png", limit=2 * 1024 * 1024)
-        if not png or not png.startswith(b"\x89PNG"):
-            return self._pwa_file(f"/icon-{m.group(2)}.png")
-        self._send(200, png, "image/png", {"Cache-Control": "public, max-age=86400",
-                                           "X-Content-Type-Options": "nosniff"})
+        return self._pwa_file(f"/icon-{m.group(2)}.png")
 
     def _pwa_file(self, route):
         ctype, cache = PWA_FILES[route]

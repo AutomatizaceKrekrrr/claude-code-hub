@@ -528,18 +528,6 @@ def pwa_id(user):
     return hmac.new(key, str(user["id"]).encode(), hashlib.sha256).hexdigest()[:24]
 
 
-def app_look(user):
-    """(název, cesta k ikoně podle velikosti) z konfigurace prostoru — pro
-    manifest a ikony na ploše. Čte se bez následování odkazů (domov patří session)."""
-    home = home_for(user)
-    try:
-        cfg = json.loads(safefs.read_text(home, ".claude/hub-config.json") or "{}")
-    except ValueError:
-        cfg = {}
-    name = str((cfg if isinstance(cfg, dict) else {}).get("app_name") or "").strip()[:40]
-    return name, home
-
-
 def _hub_config(user, home):
     vault = vault_dir(user, home)
     return {

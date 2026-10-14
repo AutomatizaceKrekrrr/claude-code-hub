@@ -756,15 +756,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(predplatne.host_action(str(payload.get("action") or ""), payload,
                                                      HUB.broadcast, HUB.prenacti_chaty))
         if name == "app-vzhled":
-            # Vlastní název a ikona appky (hub/vzhled.py, Nastavení → Vzhled).
+            # Název a ikona appky (hub/vzhled.py) — jen ke čtení.
             if self.command != "POST":
                 return self._json(vzhled.stav())
-            try:
-                return self._json(vzhled.uloz(
-                    name=payload.get("name"), icons=payload.get("icons"),
-                    reset=payload.get("reset") is True))
-            except (ValueError, OSError) as exc:
-                return self._json({"error": str(exc)}, 400)
+            # Název i ikona jsou pro všechny stejné (Paluba) — měnit nejdou.
+            return self._json({"error": "Název a ikona appky se nemění."}, 403)
         if name.startswith("hlas"):
             # Diktování a předčítání (hub/hlas.py) — česky, na tomhle stroji.
             from . import eleven, hlas

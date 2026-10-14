@@ -1,32 +1,26 @@
 """
-Vlastní název a ikona appky — každý si hub pojmenuje a dá mu vlastní ikonu
-(Nastavení → Vzhled). Platí v okně i na liště hubu, pro ikonu na ploše
-telefonu (PWA) a pro spouštěč na počítači.
+Název a ikona appky — pro všechny stejné: Paluba a loďka z promptu. Platí
+v okně i na liště hubu, pro ikonu na ploše telefonu (PWA) a pro spouštěč na
+počítači.
 
-Ikonu kreslí prohlížeč (emoji na barevném pozadí, nebo nahraný obrázek) do
-PNG ve třech velikostech a hub je jen uloží — žádná knihovna na obrázky.
-Leží v ~/.claude/hub-ikona-<velikost>.png; na serveru tedy v domově
-prostoru, odkud je pro manifest čte brána (gateway/server.py, podle tajného
-kódu účtu v adrese — prohlížeč manifest a ikony stahuje bez přihlášení).
+Dřív si je šlo změnit (Nastavení → Vzhled, `app_name` v hub-config
+a ~/.claude/hub-ikona-*.png). Uložené hodnoty se teď nečtou; nazev()
+a ikona() zůstávají kvůli místům, která se na ně ptají (lišta, okno, manifest).
 """
 import html
 import json
 import os
-import re
 
 from . import core
 
 VYCHOZI = "Paluba"
 VELIKOSTI = (512, 192, 32)
-MAX_IKONA = 2 * 1024 * 1024
-MAX_NAZEV = 40
 STATIC = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
 def nazev():
-    """Název, který si člověk nastavil, nebo ''."""
-    text = str(core.CONFIG.get("app_name") or "")
-    return re.sub(r"[\x00-\x1f\x7f]", "", text).strip()[:MAX_NAZEV]
+    """Vlastní název — už žádný, platí VYCHOZI."""
+    return ""
 
 
 def zobrazeny():
@@ -34,9 +28,8 @@ def zobrazeny():
 
 
 def ikona(size):
-    """Cesta k vlastní ikoně dané velikosti, nebo ''."""
-    path = os.path.join(core.CLAUDE_DIR, f"hub-ikona-{int(size)}.png")
-    return path if os.path.isfile(path) else ""
+    """Vlastní ikona — už žádná, platí výchozí z hub/static."""
+    return ""
 
 
 def ikona_nebo_vychozi(size):
@@ -52,57 +45,6 @@ def verze():
 def stav():
     return {"name": nazev(), "shown": zobrazeny(), "default": VYCHOZI,
             "icon": verze(), "pwa_id": str(core.CONFIG.get("pwa_id") or "")}
-
-
-def uloz(name=None, icons=None, reset=False):
-    """Uloží název a/nebo ikony. `icons` = {velikost: base64 PNG}."""
-    import base64
-    if reset:
-        for s in VELIKOSTI:
-            p = ikona(s)
-            if p:
-                os.remove(p)
-        core.save_config({"app_name": ""})
-        sync_desktop()
-        try:
-            from . import pozadi
-            pozadi.ikonka_znovu()
-        except Exception:
-            pass
-        return stav()
-    if name is not None:
-        clean = re.sub(r"[\x00-\x1f\x7f]", "", str(name)).strip()
-        if len(clean) > MAX_NAZEV:
-            raise ValueError(f"Název může mít nejvýš {MAX_NAZEV} znaků.")
-        core.save_config({"app_name": clean})
-    if icons:
-        data = {}
-        for s in VELIKOSTI:
-            raw = icons.get(str(s)) if isinstance(icons, dict) else None
-            if raw is None:
-                raise ValueError("Chybí ikona ve velikosti %d." % s)
-            try:
-                png = base64.b64decode(str(raw).split(",", 1)[-1], validate=False)
-            except ValueError:
-                raise ValueError("Ikona je poškozená.") from None
-            if not png.startswith(b"\x89PNG\r\n\x1a\n") or len(png) > MAX_IKONA:
-                raise ValueError("Ikona musí být PNG do 2 MB.")
-            data[s] = png
-        os.makedirs(core.CLAUDE_DIR, exist_ok=True)
-        for s, png in data.items():
-            target = os.path.join(core.CLAUDE_DIR, f"hub-ikona-{s}.png")
-            tmp = target + ".tmp"
-            with open(tmp, "wb") as fh:
-                fh.write(png)
-            os.chmod(tmp, 0o644)
-            os.replace(tmp, target)
-    sync_desktop()
-    try:
-        from . import pozadi
-        pozadi.ikonka_znovu()
-    except Exception:
-        pass
-    return stav()
 
 
 # ── stránka a manifest ───────────────────────────────────────────────────────
