@@ -520,7 +520,12 @@ install_agenti() {
         if (quiet env UV_TOOL_DIR=/usr/local/lib/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin \
                 UV_PYTHON_INSTALL_DIR=/usr/local/lib/uv-python \
                 uv tool install --force --python 3.12 --with pip aider-chat@latest); then
-            chmod -R a+rX /usr/local/lib/uv-tools /usr/local/lib/uv-python 2>/dev/null; ok="$ok aider-chat"
+            # uv-python je jen tam, kde si uv Python stáhl (ne na 24.04 se
+            # systémovým 3.12) — chmod na chybějící složku by přes `set -e`
+            # ukončil celou instalaci.
+            chmod -R a+rX /usr/local/lib/uv-tools 2>/dev/null || true
+            if [ -d /usr/local/lib/uv-python ]; then chmod -R a+rX /usr/local/lib/uv-python 2>/dev/null || true; fi
+            ok="$ok aider-chat"
         else warn "aider se nenainstaloval — podrobnosti v $LOG"; fi
     fi
     if [ -n "$ok" ]; then ok "nainstalováno:$ok"; fi
