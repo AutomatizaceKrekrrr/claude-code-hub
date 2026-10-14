@@ -59,10 +59,32 @@ main() {
         exit 1
     fi
 
+    # Místo pro novou zálohu: bude zhruba jako poslední (+10 %). Úklid by po
+    # ní stejně nechal jen KEEP-1 starých — když se nevejde, smažou se ty
+    # navíc už teď, ne až po ní (jinak by na disku musely být KEEP+1 kusy).
+    # Poslední dobrou zálohu nikdy předem nemaže: kdyby nová selhala, nezbyla
+    # by žádná.
+    local last need free f
+    last="$(ls -1t "$DEST"/hub-*.tar.zst.gpg 2>/dev/null | head -n 1)"
+    if [ -n "$last" ]; then
+        need=$(( $(stat -c %s "$last") * 11 / 10 ))
+        while read -r f; do
+            [ -n "$f" ] || continue
+            free="$(df --output=avail -B1 "$DEST" | tail -n 1)"
+            [ "$free" -gt "$need" ] && break
+            rm -f "$f"
+            log "kvůli místu předem smazána starší záloha: $(basename "$f")"
+        done <<<"$(ls -1t "$DEST"/hub-*.tar.zst.gpg 2>/dev/null | tail -n +$((KEEP > 1 ? KEEP : 2)) | tac)"
+        free="$(df --output=avail -B1 "$DEST" | tail -n 1)"
+        if [ "$free" -le "$need" ]; then
+            log "VAROVÁNÍ: na disku je $((free / 1024 / 1024)) MB, záloha bude mít asi $((need / 1024 / 1024)) MB — zkouším i tak"
+        fi
+    fi
+
     log "začínám (příjemce: $recipient)"
     # nice/ionice: na stroji zároveň pracují lidé, záloha jim nesmí ubrat výkon.
     # Vynechané cesty jsou cache (stáhnou se znovu) a koše po smazaných účtech.
-    if nice -n 19 ionice -c3 tar -C "$(dirname "$SRC")" -cf - \
+    nice -n 19 ionice -c3 tar -C "$(dirname "$SRC")" -cf - \
             --warning=no-file-changed --warning=no-file-ignored \
             --exclude='*/.cache' \
             --exclude='*/.npm' \
@@ -75,22 +97,22 @@ main() {
         | nice -n 19 zstd -3 -T2 -q \
         | GNUPGHOME="$ring" gpg --batch --yes --quiet --trust-model always \
               --encrypt --recipient "$recipient" --output "$tmp"
-    then
+    local st=("${PIPESTATUS[@]}")
+    # tar vrací 1, i když se jen soubor změnil během čtení — u živého serveru
+    # běžné a záloha je použitelná. Chyba zstd nebo gpg (třeba plný disk) ale
+    # znamená useknutý soubor: ten se nesmí tvářit jako záloha.
+    if [ "${st[1]}" -eq 0 ] && [ "${st[2]}" -eq 0 ] && [ "${st[0]}" -le 1 ] && [ -s "$tmp" ]; then
         mv -f "$tmp" "$out"
         chmod 600 "$out"
-        log "hotovo: $(basename "$out") ($(du -h "$out" | cut -f1))"
-    else
-        # tar vrací 1 i když se jen soubor změnil během čtení; to je u živého
-        # serveru běžné a záloha je použitelná. Prázdný výstup je ale chyba.
-        if [ -s "$tmp" ]; then
-            mv -f "$tmp" "$out"
-            chmod 600 "$out"
-            log "hotovo s výhradou (soubor se měnil během čtení): $(basename "$out") ($(du -h "$out" | cut -f1))"
+        if [ "${st[0]}" -eq 0 ]; then
+            log "hotovo: $(basename "$out") ($(du -h "$out" | cut -f1))"
         else
-            rm -f "$tmp"
-            log "CHYBA: záloha se nepovedla, nic jsem nezapsal"
-            exit 1
+            log "hotovo s výhradou (soubor se měnil během čtení): $(basename "$out") ($(du -h "$out" | cut -f1))"
         fi
+    else
+        rm -f "$tmp"
+        log "CHYBA: záloha se nepovedla (tar ${st[0]}, zstd ${st[1]}, gpg ${st[2]}; volno $(df -h "$DEST" | awk 'NR==2{print $4}')), nic jsem nezapsal"
+        exit 1
     fi
 
     # Úklid: drží se posledních KEEP kusů.
