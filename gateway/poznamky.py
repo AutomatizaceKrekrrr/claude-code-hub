@@ -21,6 +21,11 @@ nepracuje, tomu brána prostor zastaví hned.
 Registr leží vedle trezoru, ne v něm (COMPANY_DIR/poznamky-pristupy.json), podle
 id účtů a relativních cest (`poznamky` a `slozky`). Přesun poznámky mimo bránu (git, Obsidian na
 počítači správce) omezení nepřenese — poznámka na nové cestě je pro všechny.
+
+Každá firma (gateway/firmy.py) má registr ve své složce. U dnešní firmy
+(`firma`) jsou správci poznámek pevný seznam jako dřív, u nových firem jsou
+to její kapitáni. Klienty a podkategorie (výchozí skrytí) hlídá firmy.py —
+tady se jen přidají ke skrytým cestám.
 """
 import contextlib
 import fcntl
@@ -30,20 +35,33 @@ import re
 import threading
 import time
 
-from . import config, shared, slozky
+from . import config, firmy, shared, slozky
 
+LEGACY = firmy.LEGACY
 REGISTRY = os.path.join(config.COMPANY_DIR, "poznamky-pristupy.json")
 LOG = os.path.join(config.COMPANY_DIR, "poznamky-pristupy.jsonl")
 _LOCK = threading.Lock()
+
+
+def _registry(firma=LEGACY):
+    if firma == LEGACY:
+        return REGISTRY
+    return os.path.join(firmy.firma_dir(firma), "poznamky-pristupy.json")
+
+
+def _logpath(firma=LEGACY):
+    if firma == LEGACY:
+        return LOG
+    return os.path.join(firmy.firma_dir(firma), "poznamky-pristupy.jsonl")
 # Místo prázdného seznamu u poznámky, kterou vidí jen správci.
 NOBODY = -1
 
 
 @contextlib.contextmanager
-def _locked():
+def _locked(firma=LEGACY):
     with _LOCK:
-        os.makedirs(config.COMPANY_DIR, exist_ok=True)
-        with open(REGISTRY + ".lock", "a") as fh:
+        os.makedirs(os.path.dirname(_registry(firma)), exist_ok=True)
+        with open(_registry(firma) + ".lock", "a") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
                 yield
@@ -51,15 +69,17 @@ def _locked():
                 fcntl.flock(fh, fcntl.LOCK_UN)
 
 
-def _load():
+def _load(firma=LEGACY):
     try:
-        with open(REGISTRY, encoding="utf-8") as fh:
+        with open(_registry(firma), encoding="utf-8") as fh:
             data = json.load(fh)
     except (OSError, ValueError):
         data = {}
     if not isinstance(data, dict):
         data = {}
     managers = [int(u) for u in data.get("spravci") or [] if isinstance(u, int)]
+    if firma != LEGACY:
+        managers = firmy.kapitani(firma)     # u nových firem spravují kapitáni
     out = {"spravci": managers}
     for key in ("poznamky", "slozky"):
         rules = data.get(key) if isinstance(data.get(key), dict) else {}
@@ -68,21 +88,23 @@ def _load():
     return out
 
 
-def _save(data):
-    tmp = REGISTRY + ".tmp"
+def _save(data, firma=LEGACY):
+    if firma != LEGACY:
+        data = {**data, "spravci": []}
+    tmp = _registry(firma) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(data, fh, ensure_ascii=False, indent=2, sort_keys=True)
-    os.replace(tmp, REGISTRY)
+    os.replace(tmp, _registry(firma))
 
 
-def _log(user, rel, before, after):
+def _log(user, rel, before, after, firma=LEGACY):
     before = [u for u in before or [] if u != NOBODY] if before else None
     after = [u for u in after if u != NOBODY] if after is not None else None
     entry = {"cas": time.strftime("%Y-%m-%d %H:%M:%S"), "email": (user or {}).get("email", ""),
              "poznamka": rel, "z": ([_email(u) for u in before] or "jen správci") if before is not None else "všichni",
              "na": ([_email(u) for u in after] or "jen správci") if after is not None else "všichni"}
     try:
-        with open(LOG, "a", encoding="utf-8") as fh:
+        with open(_logpath(firma), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         pass
@@ -113,12 +135,12 @@ def _dir_rel(rel):
 
 
 # ── kdo co smí ───────────────────────────────────────────────────────────────
-def managers():
-    return list(_load()["spravci"])
+def managers(firma=LEGACY):
+    return list(_load(firma)["spravci"])
 
 
-def is_manager(user):
-    return bool(user) and int(user["id"]) in _load()["spravci"]
+def is_manager(user, firma=LEGACY):
+    return bool(user) and int(user["id"]) in _load(firma)["spravci"]
 
 
 def _sees(data, uid, rel):
@@ -137,27 +159,29 @@ def _sees(data, uid, rel):
     return True
 
 
-def allowed(user, rel):
-    """Smí `user` poznámku `rel` vidět (a tedy i přepsat)?"""
+def allowed(user, rel, firma=LEGACY):
+    """Smí `user` poznámku `rel` vidět (a tedy i přepsat)? I podle klientů
+    a podkategorií firmy (firmy.vidi)."""
     try:
         rel = _rel(rel)
     except ValueError:
         return True                      # neplatnou cestu odmítne až zápis sám
-    return _sees(_load(), int(user["id"]), rel)
+    return _sees(_load(firma), int(user["id"]), rel) and firmy.vidi(user, firma, rel)
 
 
-def allowed_path(user, rel):
+def allowed_path(user, rel, firma=LEGACY):
     """Jako `allowed`, jen pro jakýkoli soubor (ne jen .md) — nahrávání."""
-    return _sees(_load(), int(user["id"]), str(rel))
+    return _sees(_load(firma), int(user["id"]), str(rel)) and firmy.vidi(user, firma, str(rel))
 
 
-def hidden_for(user, data=None):
+def hidden_for(user, data=None, firma=LEGACY):
     """Relativní cesty poznámek a složek, které `user` nevidí a v trezoru
-    opravdu jsou — i cizí osobní a sdílené složky (gateway/slozky.py).
+    opravdu jsou — i cizí osobní a sdílené složky (gateway/slozky.py)
+    a klienti či podkategorie bez přístupu (gateway/firmy.py).
     Co leží ve skryté složce, se už nevypisuje: skryje se s ní."""
-    data = data or _load()
+    data = data or _load(firma)
     uid = int(user["id"])
-    vault = config.COMPANY_VAULT
+    vault = firmy.vault_dir(firma)
 
     def there(rel, check):
         path = os.path.join(vault, *rel.split("/"))
@@ -166,22 +190,33 @@ def hidden_for(user, data=None):
     hidden = {rel for rel in data["poznamky"] if there(rel, os.path.isfile)} | \
              {rel for rel in data["slozky"] if there(rel, os.path.isdir)}
     hidden = {rel for rel in hidden if not _sees(data, uid, rel)}
+    hidden |= set(firmy.skryte(user, firma)[0])
     hidden = {rel for rel in hidden
               if not any(rel.startswith(h + "/") for h in hidden)}
-    return sorted(hidden | set(slozky.hidden_for(user)))
+    if firma == LEGACY:
+        hidden |= set(slozky.hidden_for(user))
+    return sorted(hidden)
 
 
-def masked_dirs():
+def always_masked(user, firma=LEGACY):
+    """Složky, přes které se má uživateli položit tmpfs, i když v nich nic
+    skrytého není — kvůli novým klientům a podkategoriím (firmy.skryte)."""
+    return firmy.skryte(user, firma)[1]
+
+
+def masked_dirs(firma=LEGACY):
     """Složky (relativně k trezoru), ve kterých je nějaká omezená poznámka nebo
     složka — aspoň pro někoho v nich leží tmpfs s jednotlivě přivázanými soubory."""
-    data = _load()
+    data = _load(firma)
     return ({os.path.dirname(rel) for rel in data["poznamky"]}
-            | {os.path.dirname(rel) for rel in data["slozky"]} | set(slozky.ROOTS))
+            | {os.path.dirname(rel) for rel in data["slozky"]}
+            | (set(slozky.ROOTS) if firma == LEGACY else set()) | firmy.maskovane(firma))
 
 
 # ── sandbox ──────────────────────────────────────────────────────────────────
-def mask_args(vault, hidden):
+def mask_args(vault, hidden, always=()):
     """Argumenty bwrap, které ze svázaného trezoru `vault` vynechají `hidden`.
+    Přes složky z `always` se tmpfs položí, i když v nich nic skryté není.
 
     Musí přijít až po `--ro-bind vault vault`. Každá složka, ve které je něco
     skrytého, dostane přes sebe prázdný tmpfs a do něj se přivážou zpátky jen
@@ -195,6 +230,8 @@ def mask_args(vault, hidden):
     for rel in hidden:
         parts = rel.split("/")
         by_dir.setdefault("/".join(parts[:-1]), set()).add(parts[-1])
+    for rel in always:
+        by_dir.setdefault(rel, set())
     args = []
     for rel_dir in sorted(by_dir, key=lambda d: (d.count("/") if d else -1, d)):
         src = os.path.join(vault, *rel_dir.split("/")) if rel_dir else vault
@@ -218,11 +255,15 @@ def mask_args(vault, hidden):
 
 
 # ── správa ───────────────────────────────────────────────────────────────────
-def people():
+def people(firma=LEGACY):
     """Kdo je v týmu a jestli vidí firemní Obsidian — z toho se vybírá."""
     if not shared.ACCOUNTS:
         return []
-    data = _load()
+    data = _load(firma)
+    if firma != LEGACY:
+        level = {"kapitan": "write", "clen": "write", "host": "read"}
+        return [{"email": m["email"], "name": m["name"], "firma": level[m["role"]],
+                 "spravce": m["id"] in data["spravci"]} for m in firmy.clenove(firma)]
     out = []
     for r in shared.ACCOUNTS.list():
         if r["disabled"]:
@@ -233,10 +274,10 @@ def people():
     return out
 
 
-def listing():
+def listing(firma=LEGACY):
     """Omezené poznámky i složky a kdo je vidí (pro správce). Složky jsou
     bez .md, podle toho se od poznámek poznají."""
-    data = _load()
+    data = _load(firma)
     out = {}
     for rel, uids in sorted({**data["slozky"], **data["poznamky"]}.items()):
         out[rel] = [{"email": u["email"], "name": u.get("name", "")}
@@ -244,9 +285,9 @@ def listing():
     return out
 
 
-def folders():
+def folders(firma=LEGACY):
     """Cesty omezených složek."""
-    return sorted(_load()["slozky"])
+    return sorted(_load(firma)["slozky"])
 
 
 def _resolve(emails):
@@ -263,11 +304,11 @@ def _resolve(emails):
     return ids, unknown
 
 
-def _target(rel):
+def _target(rel, firma=LEGACY):
     """(druh, cesta): složka (`slozky`), nebo poznámka (`poznamky`)."""
-    vault = config.COMPANY_VAULT
+    vault = firmy.vault_dir(firma)
     raw = str(rel or "").replace("\\", "/").strip().strip("/")
-    if slozky.special(raw):
+    if firma == LEGACY and slozky.special(raw):
         raise ValueError("Kdo vidí osobní a sdílené složky, určuje jejich vlastník — "
                          f"v {slozky.PEOPLE}/ a {slozky.SHARED}/ se to tady nenastavuje.")
     if not raw.lower().endswith(".md"):
@@ -281,16 +322,16 @@ def _target(rel):
     return "poznamky", rel
 
 
-def set_note(user, rel, emails, only=None):
+def set_note(user, rel, emails, only=None, firma=LEGACY):
     """Nastaví, kdo poznámku (nebo složku) vidí. `only` False (nebo prázdný
     seznam bez `only`) = všichni, omezení se zruší. `only` s prázdným
     seznamem = jen správci poznámek.
 
     Vrací {"ok", "path", "slozka", "people", "revoked": [id účtů, které ji
     přestaly vidět], "granted": [id, které ji nově vidí]}."""
-    if not is_manager(user):
+    if not is_manager(user, firma):
         raise PermissionError("Kdo vidí poznámku, nastavují jen správci poznámek.")
-    kind, rel = _target(rel)
+    kind, rel = _target(rel, firma)
     if isinstance(emails, str):
         emails = emails.replace(",", " ").split()
     ids, unknown = _resolve(emails)
@@ -299,8 +340,8 @@ def set_note(user, rel, emails, only=None):
     everyone = [r["id"] for r in shared.ACCOUNTS.list()] if shared.ACCOUNTS else []
     if only is None:
         only = bool(ids)
-    with _locked():
-        data = _load()
+    with _locked(firma):
+        data = _load(firma)
         before = data[kind].get(rel, [])
         saw = {u for u in everyone if _sees(data, u, rel)}
         if only:
@@ -310,8 +351,8 @@ def set_note(user, rel, emails, only=None):
             ids = []
             data[kind].pop(rel, None)
         sees = {u for u in everyone if _sees(data, u, rel)}
-        _save(data)
-    _log(user, rel, before, ids if only else None)
+        _save(data, firma)
+    _log(user, rel, before, ids if only else None, firma)
     return {"ok": True, "path": rel, "slozka": kind == "slozky", "jen": bool(only),
             "people": [_email(i) for i in ids],
             "revoked": sorted(saw - sees), "granted": sorted(sees - saw)}
@@ -330,12 +371,17 @@ def set_managers(emails):
 
 
 def forget_user(uid):
-    """Smazaný účet: pryč ze správců i ze všech poznámek. Poznámka, kterou
-    by pak neviděl nikdo, zůstane omezená — vidí ji správci."""
-    if not os.path.exists(REGISTRY):
+    """Smazaný účet: pryč ze správců i ze všech poznámek (ve všech firmách)."""
+    for firma in firmy.slugs():
+        _forget_user(uid, firma)
+
+
+def _forget_user(uid, firma):
+    """Poznámka, kterou by pak neviděl nikdo, zůstane omezená — vidí ji správci."""
+    if not os.path.exists(_registry(firma)):
         return
-    with _locked():
-        data = _load()
+    with _locked(firma):
+        data = _load(firma)
         changed = uid in data["spravci"]
         data["spravci"] = [u for u in data["spravci"] if u != uid]
         for rules in (data["poznamky"], data["slozky"]):
@@ -344,4 +390,4 @@ def forget_user(uid):
                     rules[rel] = [u for u in uids if u != uid] or [NOBODY]
                     changed = True
         if changed:
-            _save(data)
+            _save(data, firma)

@@ -30,6 +30,11 @@ JSON-RPC na loopback brány (`/gw/mcp-sdilene/volani`) se žetonem prostoru —
 stejně jako most na počítač. Brána u **každé** zprávy znovu ověří, že člověk
 je členem; odebraný tak přístup ztratí hned, ne až po restartu.
 
+Sdílet jde i **podkategorii firmy** (`skupiny`, gateway/firmy.py): napojení
+pak smí používat každý, kdo do podkategorie vidí — přístupové údaje k webu
+klienta dostane Claude každého, kdo na webu dělá, a nikdo z nich je nevidí.
+Kdo o přístup k podkategorii přijde, přijde i o napojení (hned, u další zprávy).
+
 Registr: GATEWAY_DIR/mcp-sdilene/registr.json (0600, složka 0700), podle id
 účtů. Záznam o změnách (bez tajemství): mcp-sdilene/zmeny.jsonl.
 """
@@ -49,7 +54,7 @@ import time
 import unicodedata
 import urllib.parse
 
-from . import config, isolation, safefs, shared
+from . import config, firmy, isolation, safefs, shared
 
 DIR = os.environ.get("HUB_GW_MCP_SHARED_DIR", os.path.join(config.GATEWAY_DIR, "mcp-sdilene"))
 REGISTRY = os.path.join(DIR, "registr.json")
@@ -135,6 +140,8 @@ def _public(slug, entry, uid):
         out["members"] = [{"email": u["email"], "name": u.get("name", "")}
                           for u in (_account(m) for m in entry.get("members", []))
                           if u and u["id"] != uid]
+        out["skupiny"] = [{"id": g, "nazev": firmy.skupina_nazev(g)}
+                          for g in entry.get("skupiny") or []]
         if entry.get("kind") == "adresa":
             out["url"] = entry.get("url", "")
             out["secrets"] = sorted(entry.get("headers") or {})
@@ -144,24 +151,53 @@ def _public(slug, entry, uid):
     return out
 
 
+def _is_member(entry, user, data=None):
+    """Smí `user` napojení používat — jmenovitě, nebo přes podkategorii firmy?"""
+    if int(user["id"]) in entry.get("members", []):
+        return True
+    return any(firmy.ve_skupine(user, g, data) for g in entry.get("skupiny") or [])
+
+
 def for_user(user):
     """Napojení, která `user` smí používat (svoje i nasdílená)."""
     uid = int(user["id"])
+    data = firmy._load()
     return [_public(slug, e, uid) for slug, e in sorted(_load().items())
-            if uid in e.get("members", [])]
+            if _is_member(e, user, data)]
 
 
 def all_items():
-    return [dict(_public(slug, e, None), members=[_label(m) for m in e.get("members", [])])
+    return [dict(_public(slug, e, None), members=[_label(m) for m in e.get("members", [])]
+                 + [firmy.skupina_nazev(g) for g in e.get("skupiny") or []])
             for slug, e in sorted(_load().items())]
 
 
 def member(user, slug):
     """Záznam napojení, když je `user` členem — jinak None."""
     entry = _load().get(str(slug or ""))
-    if entry and int(user["id"]) in entry.get("members", []):
+    if entry and _is_member(entry, user):
         return entry
     return None
+
+
+def _skupiny(user, raw):
+    """Podkategorie z formuláře — jen ty, do kterých `user` smí sdílet
+    (firmy.skupiny_pro). None = ve formuláři nejsou, nic neměnit."""
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        raw = [g for g in raw.split(",") if g.strip()]
+    if not isinstance(raw, list):
+        raise ValueError("Seznam podkategorií je poškozený.")
+    allowed = {g["id"] for g in firmy.skupiny_pro(user)}
+    out = []
+    for g in raw:
+        g = str(g or "").strip()
+        if g not in allowed:
+            raise ValueError("Do téhle podkategorie sdílet nemůžeš (nevidíš ji, nebo jsi ve firmě host).")
+        if g not in out:
+            out.append(g)
+    return out
 
 
 # ── založení a správa ────────────────────────────────────────────────────────
@@ -258,6 +294,9 @@ def create(user, form):
         slug = _slugify(name, items)
         items[slug] = {"name": name, "owner": uid, "members": [uid] + [i for i in ids if i != uid],
                        "created": time.strftime("%Y-%m-%d %H:%M:%S"), **spec}
+        groups = _skupiny(user, form.get("skupiny"))
+        if groups:
+            items[slug]["skupiny"] = groups
         _save(items)
     _log(user, "zalozit", slug, druh=spec["kind"], clenove=[_label(i) for i in ids])
     return {"ok": True, "slug": slug}
@@ -288,6 +327,9 @@ def update(user, form):
             new = ([owner] if owner else []) + [i for i in ids if i != owner]
             removed = [m for m in entry.get("members", []) if m not in new]
             entry["members"] = new
+        groups = _skupiny(user, form.get("skupiny"))
+        if groups is not None:
+            entry["skupiny"] = groups
         if form.get("kind"):
             spec = _spec(form)
             key = "headers" if spec["kind"] == "adresa" else "env"
@@ -426,13 +468,16 @@ def share_account(user, form):
     if unknown:
         raise ValueError("Tihle lidé tu účet nemají: " + ", ".join(unknown))
     ids = [i for i in ids if i != uid]
+    groups = _skupiny(user, form.get("skupiny"))
     with _locked():
         items = _load()
         slug = next((s for s, e in items.items() if e.get("kind") == "ucet"
                      and e.get("owner") == uid and e.get("service") == service
                      and e.get("account") == account), None)
+        if groups is None:
+            groups = list((items.get(slug) or {}).get("skupiny") or [])
         removed = []
-        if not ids:
+        if not ids and not groups:
             if slug:
                 removed = items.pop(slug).get("members", [])
                 _save(items)
@@ -440,6 +485,7 @@ def share_account(user, form):
             entry = items[slug]
             removed = [m for m in entry.get("members", []) if m != uid and m not in ids]
             entry["members"] = [uid] + ids
+            entry["skupiny"] = groups
             _save(items)
         else:
             owner = _label(uid).split("@")[0].split(" ")[0]
@@ -448,12 +494,14 @@ def share_account(user, form):
             slug = _slugify(f"{service} {label or account.split('@')[0]} {owner}", items)
             items[slug] = {"name": name, "owner": uid, "members": [uid] + ids,
                            "created": time.strftime("%Y-%m-%d %H:%M:%S"), "kind": "ucet",
-                           "service": service, "account": account, "label": label}
+                           "service": service, "account": account, "label": label,
+                           "skupiny": groups}
             _save(items)
     if slug:
-        _log(user, "sdilet-ucet", slug, clenove=[_label(i) for i in ids])
-        POOL.stop(slug, None if not ids else removed)
-    return {"ok": True, "slug": slug if ids else ""}
+        _log(user, "sdilet-ucet", slug, clenove=[_label(i) for i in ids],
+             podkategorie=[firmy.skupina_nazev(g) for g in groups])
+        POOL.stop(slug, None if not (ids or groups) else removed)
+    return {"ok": True, "slug": slug if ids or groups else ""}
 
 
 def forget_user(uid):

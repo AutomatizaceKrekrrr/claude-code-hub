@@ -853,6 +853,85 @@ def company_vault():
     return os.path.abspath(os.path.expanduser(path)) if path else ""
 
 
+_FIRMA_SLUG = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+
+
+def firmy_list():
+    """Firmy, kde je uživatel členem (hub-config `firmy` od brány,
+    gateway/firmy.py): [{zkratka, nazev, cesta, role, mazat, klienti}]. Dnešní
+    firemní trezor je mezi nimi jako `firma`."""
+    out = []
+    for f in CONFIG.get("firmy") or []:
+        if (isinstance(f, dict) and _FIRMA_SLUG.fullmatch(str(f.get("zkratka") or ""))
+                and f.get("cesta")):
+            out.append({"zkratka": f["zkratka"], "nazev": str(f.get("nazev") or f["zkratka"]),
+                        "cesta": os.path.abspath(str(f["cesta"])),
+                        "role": str(f.get("role") or "host"), "mazat": bool(f.get("mazat")),
+                        "klienti": bool(f.get("klienti")),
+                        # klienti (agentura: Klienti/klient/podkategorie) / projekty (Projekty/projekt)
+                        "druh": "projekty" if f.get("druh") == "projekty" else "klienti"})
+    return out
+
+
+def firma_info(vault):
+    """Firma trezoru `firma:<zkratka>` (dnešní `firma` taky), nebo None."""
+    vault = str(vault or "")
+    slug = "firma" if vault == "firma" else vault[len("firma:"):] if vault.startswith("firma:") else ""
+    if not slug:
+        return None
+    return next((f for f in firmy_list() if f["zkratka"] == slug), None)
+
+
+def firma_root(slug):
+    """Kořen trezoru firmy `slug`, nebo '' (do firmy uživatel nepatří)."""
+    f = firma_info("firma:" + str(slug or ""))
+    return f["cesta"] if f else ""
+
+
+# Pracovní složky chatů firem: ~/firmy/<zkratka>[/<klient>/<podkategorie>].
+# Kód a soubory z práce pro firmu tak leží odděleně od osobních projektů i od
+# jiné firmy — a podle složky chatu hub pozná, do které firmy chat patří.
+FIRMY_PRACE = os.path.join(HOME, "firmy")
+
+
+def firma_klienti(slug):
+    """Klienti a podkategorie firmy, které prostor vidí: {druh, klienti:
+    [{nazev, podkategorie}]}; u firmy s projekty jsou projekty jako klienti
+    bez podkategorií. Čte se trezor, jak je v sandboxu — skryté tu vůbec nejsou."""
+    f = firma_info("firma:" + str(slug or ""))
+    root = f["cesta"] if f else ""
+    projekty = bool(f) and f["druh"] == "projekty"
+    base = os.path.join(root, "Projekty" if projekty else "Klienti") if root else ""
+
+    def dirs(path):
+        try:
+            return sorted((n for n in os.listdir(path) if not n.startswith(".")
+                           and os.path.isdir(os.path.join(path, n))),
+                          key=lambda n: n.lower())
+        except OSError:
+            return []
+    return {"druh": "projekty" if projekty else "klienti",
+            "klienti": [{"nazev": k, "podkategorie": [] if projekty else dirs(os.path.join(base, k))}
+                        for k in dirs(base)] if base else []}
+
+
+def firma_prace(path, slug):
+    """(klient, podkategorie), když je `path` pracovní složka chatu firmy
+    (~/firmy/<zkratka>/<klient>/<podkategorie>); jinak (None, None)."""
+    root = os.path.join(FIRMY_PRACE, slug)
+    real = os.path.abspath(str(path or ""))
+    if real != root and not real.startswith(root + os.sep):
+        return None, None
+    parts = [p for p in os.path.relpath(real, root).split(os.sep) if p not in ("", ".")]
+    return (parts[0] if parts else None), (parts[1] if len(parts) > 1 else None)
+
+
+def is_firma_vault(vault):
+    """Je `vault` trezor firmy (dnešní `firma` i `firma:<zkratka>`)?"""
+    vault = str(vault or "")
+    return vault == "firma" or (vault.startswith("firma:") and bool(firma_root(vault[6:])))
+
+
 def shared_state():
     """Sdílené Obsidiany, které má prostor svázané (hub-config od brány)."""
     out = []
@@ -909,6 +988,8 @@ def _vault_root(vault=""):
     sdílený Obsidian svázaný do prostoru ('' když takový není)."""
     if vault == "firma":
         return company_vault()
+    if str(vault).startswith("firma:"):
+        return firma_root(str(vault)[len("firma:"):])
     if str(vault).startswith("sdilene:"):
         slug = str(vault)[len("sdilene:"):]
         for v in CONFIG.get("shared_vaults") or []:
@@ -986,7 +1067,8 @@ def vault_tree(vault=""):
             continue
         files.append({"path": rel, "mtime": int(mtime), "size": size})
     root = _vault_root(vault)
-    return {"name": os.path.basename(root.rstrip(os.sep)),
+    f = firma_info(vault) if str(vault).startswith("firma:") else None
+    return {"name": f["nazev"] if f else os.path.basename(root.rstrip(os.sep)),
             "exists": bool(root) and os.path.isdir(root),
             "notes": notes, "images": images, "files": files,
             "slozky": company_links() if vault == "firma" else []}
@@ -1322,7 +1404,9 @@ def vault_proposal(rel, text, vault):
     who = (CONFIG.get("gateway_user") or {}).get("email", "")
     data = {"cil": target, "text": text, "autor": who,
             "vytvoreno": time.strftime("%Y-%m-%d %H:%M:%S")}
-    if vault != "firma":
+    if str(vault).startswith("firma:"):
+        data["firma"] = vault[len("firma:"):]
+    elif vault != "firma":
         slug = vault[len("sdilene:"):]
         info = next((v for v in shared_state() if v["slug"] == slug), None)
         if not info:
@@ -1431,12 +1515,15 @@ def firma_state():
     who = CONFIG.get("gateway_user") or {}
     return {"vault": vault, "name": os.path.basename(vault) if vault else "",
             "level": CONFIG.get("company_level") or ("write" if vault else "none"),
-            "admin": isinstance(who, dict) and who.get("role") == "admin"}
+            "admin": isinstance(who, dict) and who.get("role") == "admin",
+            # Firmy (gateway/firmy.py) — přepínač v okně a taby firem.
+            "firmy": [{k: v for k, v in f.items() if k != "cesta"} for f in firmy_list()],
+            "zakladat": bool(CONFIG.get("firmy_zakladat"))}
 
 
 def firma_pending():
     """Návrhy čekající na potvrzení, nejstarší první."""
-    if not company_vault():
+    if not company_vault() and not firmy_list():
         return []
     try:
         names = sorted(os.listdir(FIRMA_PENDING))
@@ -1462,13 +1549,16 @@ def firma_pending():
         if writes and not isinstance(data.get("text"), str):
             continue
         rel = str(data.get("cil") or "")
-        where = "firma" if kind == "firma" else "sdilene:" + str(data.get("vault") or "")
+        firma = str(data.get("firma") or "")
+        where = (("firma:" + firma if firma else "firma") if kind == "firma"
+                 else "sdilene:" + str(data.get("vault") or ""))
         texts = lambda key: [str(x) for x in data.get(key) or [] if isinstance(x, (str, int))][:50]
         # Z firemního tabu se nahrává bez karty — ale co vypadá jako heslo nebo
         # klíč, se tiše nenahraje: hub se na to zeptá kartou.
         auto = bool(data.get("auto")) and kind == "firma"
         citlive = auto and bool(_SECRET.search(str(data.get("text") or "")))
         out.append({"id": pid, "druh": kind, "auto": auto and not citlive, "citlive": citlive,
+                    "firma": firma, "firma_nazev": (firma_info(where) or {}).get("nazev", ""),
                     "cil": rel, "text": data.get("text") or "",
                     "vault": str(data.get("vault") or ""), "nazev": str(data.get("nazev") or ""),
                     "lide": texts("lide"), "pridat": texts("pridat"), "odebrat": texts("odebrat"),
@@ -3108,10 +3198,44 @@ FIRMA_TAB_PROMPT = """Jsi ve firemním tabu Paluby (HUB_VAULT=firma).
   „Server osobní"."""
 
 
-def firma_tab_prompt():
+FIRMA_TAB_PROMPT_FIRMY = """Jsi ve firemním tabu Paluby pro firmu **{nazev}**
+(HUB_VAULT=firma:{zkratka}, trezor `{cesta}`, tvoje role: {role}).
+
+- Pracuješ jen pro tuhle firmu. Čti z jejího Obsidianu; nic z ní nepiš do jiné
+  firmy ani do osobního Obsidianu a nic z jiných firem nenos sem.
+- Než do složky firmy cokoli zapíšeš, přečti si `CLAUDE.md` v ní a ve všech
+  složkách nad ní až po kořen trezoru firmy, a drž se jich.
+- Práce je v `Klienti/<klient>/<podkategorie>/` (agentura), nebo v
+  `Projekty/<projekt>/` (firma pro sebe). Vidíš jen to, k čemu má uživatel
+  přístup; o další přístup se žádá kapitán firmy.
+- Nové poznámky posílej `python3 {tool} navrh "cesta/nazev.md" - ` (obsah na
+  standardní vstup) — v tomhle tabu se nahrají rovnou, bez karty.{host}
+- Nahrávej jen to, o co uživatel v téhle konverzaci požádal. **Nikdy** do firmy
+  nedávej hesla, klíče, tokeny ani přístupy — patří do napojení (MCP)."""
+
+
+def firma_tab_prompt(vault="firma", path=""):
     tool = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                         "tools", "firma.py")
-    return FIRMA_TAB_PROMPT.format(tool=tool)
+    f = firma_info(vault)
+    if vault == "firma" or not f:
+        return FIRMA_TAB_PROMPT.format(tool=tool)
+    host = ("\n- Ve firmě jsi **host** — jen čteš; zápis brána odmítne."
+            if f["role"] == "host" else "")
+    text = FIRMA_TAB_PROMPT_FIRMY.format(nazev=f["nazev"], zkratka=f["zkratka"], cesta=f["cesta"],
+                                         role={"kapitan": "kapitán", "clen": "člen"}.get(
+                                             f["role"], f["role"]), tool=tool, host=host)
+    klient, podkat = firma_prace(path, f["zkratka"])
+    if klient:
+        # Firma s projekty má jednu úroveň (Projekty/<projekt>), agentura dvě.
+        rel = ("Projekty/" + klient if f["druh"] == "projekty"
+               else "Klienti/" + klient + ("/" + podkat if podkat else ""))
+        text += (f"\n\n**Tenhle chat je pro {klient}" + (f" › {podkat}" if podkat else "") + "**. "
+                 f"Dokumentace k němu je v `{f['cesta']}/{rel}/` — než začneš, přečti si tam "
+                 "`CLAUDE.md` (i ve složkách nad ní) a co už je hotové. Nové poznámky k téhle práci "
+                 f"patří do `{rel}/`. Pracovní soubory (kód, exporty) dělej v aktuální složce "
+                 f"`{os.path.abspath(path)}` — ta je jen v prostoru uživatele.")
+    return text
 
 
 def cmd_agent(path, agent_id="", slash="", model="", resume="", fork=False, vault="",
@@ -3132,9 +3256,20 @@ def cmd_agent(path, agent_id="", slash="", model="", resume="", fork=False, vaul
                               fork=fork, session=session)
     # Firemní tab: agent dostane pokyn pro tohle sezení a nástroj firma.py podle
     # HUB_VAULT pozná, že se nahrává rovnou.
-    firma = vault == "firma" and bool(company_vault())
+    firma = (vault == "firma" and bool(company_vault())) or (
+        str(vault).startswith("firma:") and is_firma_vault(vault))
+    if firma:
+        # Pracovní složka chatu firmy (~/firmy/<zkratka>/…) vzniká, až je potřeba.
+        f = firma_info(vault)
+        root = os.path.join(FIRMY_PRACE, f["zkratka"]) if f else ""
+        where = os.path.abspath(str(path or ""))
+        if root and (where == root or where.startswith(root + os.sep)):
+            try:
+                os.makedirs(where, exist_ok=True)
+            except OSError:
+                pass
     if firma and spec.get("system_arg"):
-        argv += [part.replace("{text}", firma_tab_prompt())
+        argv += [part.replace("{text}", firma_tab_prompt(vault, path))
                  for part in spec["system_arg"].split(" ") if part]
     wrapper = _wrapper_path()
     if not wrapper:
@@ -3163,7 +3298,7 @@ def cmd_agent(path, agent_id="", slash="", model="", resume="", fork=False, vaul
     if resume and spec.get("resume_arg"):
         env["HUB_AGENT_RESUME"] = resume  # ve které konverzaci tab pokračuje
     if firma:
-        env["HUB_VAULT"] = "firma"
+        env["HUB_VAULT"] = vault
     if session and spec.get("session_arg"):
         env["HUB_SESSION_ID"] = session
     return script, env

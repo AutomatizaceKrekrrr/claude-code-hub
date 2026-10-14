@@ -48,7 +48,7 @@ import subprocess
 import sys
 import time
 
-from . import config, isolation, mcp_sdilene, poznamky, relace, shared, slozky, workspace
+from . import config, firmy, isolation, mcp_sdilene, poznamky, relace, shared, slozky, workspace
 from .accounts import Accounts
 
 
@@ -517,6 +517,7 @@ def cmd_remove(a, args):
     shared.forget_user(user["id"])
     relace.forget_user(user["id"])
     poznamky.forget_user(user["id"])
+    firmy.forget_user(user["id"])
     mcp_sdilene.forget_user(user["id"])
     try:
         slozky.sync()                    # pryč i ze sdílených trezorů
@@ -592,6 +593,61 @@ def cmd_firma(a, args):
                                        user["id"], args.level)
     print(f"{args.email}: {old} → {args.level}. Projeví se při dalším startu jeho prostoru"
           " (zápis a napojení z appky Claude hned).")
+
+
+def cmd_firmy(a, args):
+    """Firmy (gateway/firmy.py): výpis, lidé a přístupy jedné firmy, založení,
+    kapitán a kdo smí zakládat. Běžně se to dělá v hubu (Nastavení → Firmy)."""
+    def who(u):
+        return f"{u['email']} ({u['name']})" if u.get("name") else u["email"]
+    if args.action == "zalozit":
+        user = a.get(args.email or "")
+        if not user:
+            raise ValueError("Kapitán: --kapitan <e-mail existujícího účtu>.")
+        r = firmy.zalozit(None, args.cil, kapitan=user, druh_firmy=args.druh)
+        print(f"Firma „{r['nazev']}“ ({r['zkratka']}) založená, kapitán {user['email']}.")
+        return
+    if args.action == "smazat":
+        r = firmy.smazat_firmu({"role": "admin", "email": "claude-hub-admin", "id": 0}, args.cil)
+        print(r["message"])
+        return
+    if args.action == "kapitan":
+        user = a.get(args.email or "")
+        if not user:
+            raise ValueError("Komu: --kapitan <e-mail existujícího účtu>.")
+        firmy.admin_kapitan(args.cil, user["id"])
+        print(f"{user['email']} je kapitánem firmy {args.cil}.")
+        return
+    if args.action == "zakladatel":
+        user = a.get(args.cil or "")
+        if not user:
+            raise ValueError("firmy zakladatel <e-mail> [--odebrat]")
+        firmy.nastavit_zakladatele({"role": "admin"}, user["id"], not args.odebrat)
+        print(f"{user['email']} {'už nesmí' if args.odebrat else 'smí'} zakládat firmy.")
+        return
+    if args.action:
+        slug = args.action
+        if not firmy.exists(slug):
+            raise ValueError(f"Firma {slug} tu není (claude-hub-admin firmy vypíše, jaké jsou).")
+        print(f"{firmy.nazev(slug)} ({slug}) — {firmy.vault_dir(slug)}")
+        for m in firmy.clenove(slug):
+            extra = " · smí mazat" if m["role"] == "clen" and m["mazat"] else ""
+            print(f"  {who(m):<46} {firmy.ROLE_LABELS[m['role']]}{extra}")
+        if firmy.klienti_zapnute(slug):
+            ids = {m["id"]: m for m in firmy.clenove(slug)}
+            prist = firmy.pristupy(slug)
+            for klient, podkategorie in firmy.klienti(slug).items():
+                root = firmy.koren(slug)
+                for rel in [f"{root}/{klient}"] + [f"{root}/{klient}/{p}" for p in podkategorie]:
+                    lidi = [ids[u]["email"] for u in prist.get(rel, []) if u in ids]
+                    print(f"  {rel:<46} {', '.join(lidi) or 'jen kapitáni'}")
+        return
+    zakl = [r["email"] for r in a.list() if firmy.muze_zakladat(dict(r)) and r["role"] != "admin"]
+    for slug in firmy.slugs():
+        lide = firmy.clenove(slug)
+        kap = [m["email"] for m in lide if m["role"] == "kapitan"]
+        print(f"{slug:<20} {firmy.nazev(slug):<28} {len(lide)} lidí · kapitáni: {', '.join(kap) or '—'}")
+    print("Zakládat firmy smí: admini" + (", " + ", ".join(zakl) if zakl else ""))
 
 
 def cmd_poznamky(a, args):
@@ -747,6 +803,16 @@ def build_parser():
     fi.add_argument("email", nargs="?", default="")
     fi.add_argument("level", nargs="?", default="", help="none / read / write")
     fi.set_defaults(func=cmd_firma)
+
+    fy = sub.add_parser("firmy", help="firmy: výpis, lidé a přístupy, založení, kapitán, kdo smí zakládat")
+    fy.add_argument("action", nargs="?", default="",
+                    help="<zkratka> | zalozit | kapitan | zakladatel | smazat")
+    fy.add_argument("cil", nargs="?", default="", help="název firmy / zkratka / e-mail")
+    fy.add_argument("--kapitan", dest="email", default="", help="e-mail kapitána")
+    fy.add_argument("--odebrat", action="store_true", help="zakladatel: odebrat právo")
+    fy.add_argument("--druh", default="klienti", choices=sorted(firmy.DRUHY),
+                    help="zalozit: klienti (agentura) nebo projekty (firma pro sebe)")
+    fy.set_defaults(func=cmd_firmy)
 
     pz = sub.add_parser("poznamky", help="kdo vidí kterou firemní poznámku; správci poznámek")
     pz.add_argument("action", nargs="?", default="status", choices=("status", "spravci"))

@@ -86,6 +86,10 @@
     <button id="btn-home" class="topbar-home" title="Úvodní stránka">
       <svg class="ico brand-ico"><use href="#i-paluba"/></svg><strong>Paluba</strong></button>
     <button id="btn-place" class="topbar-badge"></button>
+    <!-- Prostor okna: osobní, nebo firma (gateway/firmy.py) — hub.js prostorMenu. -->
+    <button id="btn-prostor" class="topbar-prostor" hidden>
+      <span class="prostor-dot"></span><span class="prostor-name">Osobní</span>
+      <svg class="ico prostor-caret"><use href="#i-chevron"/></svg></button>
     <!-- Jen na telefonu: jméno otevřeného tabu uprostřed lišty (mobile.js),
          lišta s taby se tam nevejde. -->
     <span id="topbar-tab" class="topbar-tab"></span>
@@ -208,7 +212,7 @@
       <div class="projekty-page" id="projekty-page" hidden>
         <div class="pp-in">
           <div class="pp-head">
-            <h1>Projekty</h1>
+            <h1 id="pp-title">Projekty</h1>
             <span class="spacer"></span>
             <button class="btn ghost pp-sort" id="pp-sort" title="Řazení">Naposledy upravené</button>
             <button class="btn primary" id="pp-new">Otevřít složku…</button>
@@ -231,6 +235,8 @@
         <!-- Nová verze: napřed aktualizovat, pak pracovat (hub.js, renderWelcomeUpdate). -->
         <div class="welcome-update" id="welcome-update" hidden></div>
         <div class="welcome-actions" id="welcome-actions"></div>
+        <!-- Firmy: dlaždice v osobním prostoru, přehled klientů ve firmě. -->
+        <div class="welcome-firmy" id="welcome-firmy" hidden></div>
         <div class="welcome-cols" id="welcome-cols"></div>
         <div class="welcome-usage" id="welcome-usage" hidden></div>
         <div class="welcome-stats" id="welcome-stats" hidden></div>

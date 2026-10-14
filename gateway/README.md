@@ -278,6 +278,70 @@ Firemní trezor je jeden strom pro všechny tři úrovně (`gateway/slozky.py`):
   přibudou; poznámka ve složce musí projít pravidlem složky i svým. Registr
   `poznamky-pristupy.json` má vedle `poznamky` klíč `slozky`.
 
+## Víc firem: klienti, podkategorie a kdo kam vidí
+
+Na jedné bráně může být víc firem (`gateway/firmy.py`, návrh a důvody
+v [NAVRH-firmy.md](NAVRH-firmy.md)). Firma má vlastní Obsidian, skilly a lidi
+s rolí; jeden účet může být ve víc firmách. Dnešní firemní Obsidian je firma
+`firma` — nic se nestěhuje a kdo další firmu nezaloží, nic se mu nemění.
+
+    agentura (druh klienti)         firma pro sebe (druh projekty)
+    Krekrrr                         Good Food
+    └─ Klienti/<klient>             └─ Projekty/<projekt>
+       └─ <podkategorie>               (Web, Sociální sítě, Pokladna…)
+
+- **Druh firmy** se volí při založení: *pracuje pro klienty* (Klienti › klient ›
+  podkategorie) nebo *pro sebe* (rovnou Projekty › projekt). Změnit ho jde,
+  jen dokud je firma bez klientů / projektů — plná složka by jinak přestala být
+  skrytá. Trezor firmy je `/home/hub/firmy/<zkratka>/Brain`.
+
+- **Role ve firmě:** *kapitán* (všechno: lidi, role, klienti, přístupy, mazání),
+  *člen* (čte a zapisuje, maže jen s příznakem „smí mazat“), *host* (jen čte).
+  V dnešní firmě se role odvozuje z přístupů výš: admin → kapitán, `write` →
+  člen, `read` → host, `none` → není členem.
+- **Kdo co vidí:** obecné věci firmy (všechno mimo `Klienti/`, resp. `Projekty/`)
+  každý člen. Klient, podkategorie i projekt jsou ve výchozím stavu skryté:
+  přístup ke klientovi = soubory přímo v jeho složce, podkategorie chce i
+  přístup ke klientovi; projekt je jedna úroveň.
+  Kapitán vidí všechno. Skrývá se natvrdo jako omezená poznámka (`mask_args`);
+  přes `Klienti/` a viditelné klienty se členům tmpfs položí vždycky, takže
+  klient nebo podkategorie založená za běhu se jim neukáže (ani po restartu
+  bez přístupu). V dnešní firmě to platí, až to kapitán zapne.
+- **Nastavení → Firmy:** založit firmu (admin a účty, kterým to admin povolí —
+  `claude-hub-admin firmy zakladatel <e-mail>`), druh firmy, lidi a role, pozvat nového
+  člověka (heslo vymyslí brána; do dnešní firmy pak automaticky nepatří),
+  klienti a podkategorie (nebo projekty) a tabulka „kdo kam vidí“, smazání
+  firmy (kapitán / admin; složka se odloží do `firmy/_smazana-<zkratka>-<čas>`).
+  Brána `GET/POST /gw/firmy`, změny jen ze stránky hubu (`X-Hub-Account`).
+- **V hubu: prostor okna.** Vedle „Server“ v hlavičce je přepínač *Osobní /
+  firmy* (každé okno zvlášť, `sessionStorage`). Podle něj se řídí „Nový chat“
+  (ve firmě fialový, chat firmy), seznam chatů a taby (jiný prostor je
+  schovaný, běží dál), Projekty (ve firmě **Klienti** — klienti a podkategorie,
+  jak je prostor vidí, u každé „+ chat“), Obsidian i úvodní stránka (v osobním
+  prostoru dlaždice firem, ve firmě její klienti). Chat firmy běží ve složce
+  `~/firmy/<zkratka>[/<klient>/<podkategorie>]` — podle ní hub pozná, kam patří,
+  a v podkategorii dostane Claude pokyn začít jejím `CLAUDE.md`. Tab patří
+  jedné firmě (`HUB_VAULT=firma:<zkratka>`, pokyn jen pro ni). Obsidian firmy je
+  `vault=firma:<zkratka>`; zápis jde návrhem a kartou jako do dnešní firmy
+  (`tools/firma.py navrh --firma <zkratka>`), mazání `POST /gw/firma/smazat`
+  (odloží do `<firma>/smazano/`).
+- **Pravidla složek:** každá firma, klient a podkategorie může mít `CLAUDE.md`
+  — Claude si ho před zápisem přečte (i ve složkách nad ní). Nová firma
+  a podkategorie ho dostanou předvyplněný.
+- **Sdílení podkategorii (projektu):** sdílené napojení (MCP) i sdílený chat jde dát
+  podkategorii nebo projektu místo jmenovitě — používá ho každý, kdo do ní vidí, a kdo
+  přístup ztratí, ztratí ho u další zprávy. Chat jde do podkategorie i
+  **uložit** (kopie v `<firma>/chaty/`, mimo trezor); kdo do ní vidí, naváže
+  přes „Pokračovat u sebe“, i když autor odešel.
+- **Přihlašovací údaje** do webů klientů patří do sdíleného napojení: klíče
+  drží brána a do prostoru se nedostanou. Co je v prostředí nebo v souboru
+  v prostoru, si člověk přečte.
+- Registr `/home/hub/firmy/.firmy.json` (podle id účtů), záznam změn
+  `firmy/zmeny.jsonl`. Z příkazové řádky: `claude-hub-admin firmy`
+  (přehled), `firmy <zkratka>` (lidé a přístupy), `firmy zalozit "Název"
+  --kapitan <e-mail> [--druh projekty]`, `firmy kapitan <zkratka> --kapitan
+  <e-mail>` (záchrana firmy bez kapitána), `firmy smazat <zkratka>`.
+
 ## Soubory v Obsidianech (PDF, obrázky, tabulky…)
 
 Do každé složky, kam člověk smí zapisovat, jde nahrát jakýkoli soubor — v hubu

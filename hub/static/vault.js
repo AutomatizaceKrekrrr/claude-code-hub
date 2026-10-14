@@ -272,6 +272,11 @@
 
   // Který trezor: osobní (''), nebo firemní ('firma') — posílá se s každým dotazem.
   const vq = () => (io && io.vault ? '&vault=' + encodeURIComponent(io.vault) : '');
+  // Trezor firmy: dnešní firemní ('firma') i další firmy ('firma:<zkratka>',
+  // gateway/firmy.py). U dalších firem se brána ptá i na zkratku.
+  const isFirma = () => !!(io && (io.vault === 'firma' || /^firma:/.test(io.vault || '')));
+  const firmaQuery = () => (io && /^firma:/.test(io.vault || '')
+    ? '?firma=' + encodeURIComponent(io.vault.slice(6)) : '');
   const fold = (s) => String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   const baseName = (path) => path.split('/').pop().replace(/\.md$/i, '');
   const q = (sel) => box.querySelector(sel);
@@ -467,6 +472,7 @@
 
   function rootLabel() {
     if (io && io.vault === 'firma') return 'Firemní poznámky';
+    if (isFirma()) return io.title || 'Firemní poznámky';
     if (io && io.vault) return (io.title || 'Sdílené poznámky').replace(/^Sdílené poznámky — /, '');
     return 'Moje poznámky';
   }
@@ -576,8 +582,10 @@
     clearTimeout(saveTimer);
     q('.vault-modes').hidden = !canEdit();
     // Přejmenovat a smazat umí hub jen v osobním trezoru — do společných
-    // zapisuje brána až po potvrzení karty.
-    q('.vault-rename').hidden = q('.vault-del').hidden = !canEdit() || proposes();
+    // zapisuje brána až po potvrzení karty. Ve firmě maže brána: kapitán a člen
+    // s právem mazat (gateway/firmy.py).
+    q('.vault-rename').hidden = !canEdit() || proposes();
+    q('.vault-del').hidden = !canDelete();
     setState(mode === 'edit' ? (proposes() ? 'úpravy se potvrzují kartou' : 'ukládá se samo') : '');
     if (mode === 'edit' && editor) editor.setDoc(lastText);
     if (graph) graph.setFocus(current);
@@ -612,6 +620,8 @@
   // kromě vlastní a sdílené složky, ty pod firemní právo nespadají.
   const canEdit = (path = current) => !!(root.HubEditor && root.HubEditor.available) &&
     !(io && io.readonly && !linkOf(path));
+  const canDelete = (path = current) => (isFirma() && !linkOf(path) ? !!io.mazat
+                                                                     : canEdit(path) && !proposes(path));
   const proposes = (path = current) => {
     if (!(io && io.vault)) return false;
     const l = linkOf(path);
@@ -750,7 +760,7 @@
 
   function placeDialog({title, withName, name = '', folder = '', ok}) {
     return new Promise((resolve) => {
-      const wrap = node('div', 'onb set-modal vault-access-modal' + (io && io.vault === 'firma' ? ' firma' : ''));
+      const wrap = node('div', 'onb set-modal vault-access-modal' + (isFirma() ? ' firma' : ''));
       wrap.innerHTML = `
         <div class="onb-box acc-box">
           <div class="onb-head"><div><div class="onb-title"></div></div>
@@ -866,15 +876,27 @@
   }
 
   async function deleteNote() {
-    if (!current || proposes() || !canEdit()) return;
+    if (!current || !canDelete()) return;
     const was = current;
-    if (!(await HubDialog.confirm(`Smazat poznámku „${baseName(was)}“? Přesune se do koše — dá se vrátit.`, {title: 'Smazat poznámku', ok: 'Smazat'}))) return;
+    const firma = isFirma() && !linkOf(was);
+    if (!(await HubDialog.confirm(`Smazat poznámku „${baseName(was)}“? ` +
+        (firma ? 'Zmizí všem ve firmě; na serveru se odloží stranou, správce ji umí vrátit.'
+               : 'Přesune se do koše — dá se vrátit.'), {title: 'Smazat poznámku', ok: 'Smazat'}))) return;
     clearTimeout(saveTimer);
     dirty = false;
     let res;
     try {
-      res = await io.api('vault-delete' + (io.vault ? '?vault=' + encodeURIComponent(io.vault) : ''),
-                         {path: was});
+      if (firma) {
+        // Ve firmě maže brána (jen z téhle stránky, s cookie brány).
+        const r = await fetch('/gw/firma/smazat', {method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type': 'application/json', 'X-Hub-Firma': '1'},
+          body: JSON.stringify({firma: io.vault === 'firma' ? 'firma' : io.vault.slice(6), cesta: was})});
+        res = await r.json().catch(() => ({}));
+        if (!r.ok) res = {ok: false, error: res.error};
+      } else {
+        res = await io.api('vault-delete' + (io.vault ? '?vault=' + encodeURIComponent(io.vault) : ''),
+                           {path: was});
+      }
     } catch (err) {
       return io.toast('Smazat se nepodařilo: ' + err.message);
     }
@@ -1289,7 +1311,7 @@
   };
 
   async function aclFetch(method, body) {
-    const res = await fetch('/gw/firma/poznamky', {
+    const res = await fetch('/gw/firma/poznamky' + firmaQuery(), {
       method, credentials: 'same-origin',
       headers: body ? {'Content-Type': 'application/json', 'X-Hub-Account': '1'} : {},
       body: body ? JSON.stringify(body) : undefined,
@@ -1300,7 +1322,7 @@
   }
 
   async function loadAcl() {
-    if (!io || io.vault !== 'firma') return;
+    if (!isFirma()) return;
     try {
       acl = await aclFetch('GET');
     } catch (err) {
@@ -1432,8 +1454,7 @@
     if (io.onPlace) io.onPlace(opts.path || '');
     // Firemní trezor je fialový jako všude jinde — třída přebije barvu
     // prostředí uvnitř celého okna, ať se osobní a firemní nespletou.
-    box = node('div', 'onb set-modal vault-modal' +
-                      (io && io.vault === 'firma' ? ' firma' : ''));
+    box = node('div', 'onb set-modal vault-modal' + (isFirma() ? ' firma' : ''));
     box.innerHTML = `
       <div class="onb-box">
         <div class="onb-head">
@@ -1499,7 +1520,7 @@
       prepinac.hidden = false;
       for (const t of trezory) {
         const b = node('button', 'vault-trezor' + (t.id === (io.vault || '') ? ' on' : '') +
-                                 (t.id === 'firma' ? ' firma' : ''), t.name);
+                                 (/^firma(:|$)/.test(t.id) ? ' firma' : ''), t.name);
         b.title = t.shared ? 'Sdílené poznámky' : t.name;
         b.onclick = () => { if (t.id !== (io.vault || '')) io.prepni(t.id); };
         prepinac.appendChild(b);

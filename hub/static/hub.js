@@ -207,7 +207,7 @@ function applyMotiv(m) {
    Claude Code kreslí sám, se řídí odsud, ať je celý tab v jedné barvě. */
 function accentHex(tab) {
   const p = palette();
-  if (tab && tab.vault === 'firma') return p.FIRMA;
+  if (tab && isFirmaVault(tab.vault)) return p.FIRMA;
   return onServer() ? p.CLOUD : p.AMBER;
 }
 
@@ -599,18 +599,22 @@ function vaultPreview() {
 function reopenVaultPlace() {
   const v = LAST_PLACE.vault;
   if (!v || !STATE || !vaultPreview()) return;
-  if (v.vault === 'firma' && !(STATE.firma && STATE.firma.vault)) return;
+  if (isFirmaVault(v.vault) && !firmaOf(v.vault)) return;
   openVault(v.path || '', v.vault || '', v.title || '');
 }
 
 function openVault(path, vault, title) {
-  const firma = vault === 'firma';
+  const firma = isFirmaVault(vault);
   const shared = /^sdilene:/.test(vault || '');
+  const f = firma ? firmaOf(vault) : null;
+  if (firma && f && f.zkratka !== prostor()) setProstor(f.zkratka);
   HubVault.open({
     api,
     path: path || '',
     vault: firma || shared ? vault : '',
-    title: firma ? 'Firemní poznámky' : shared ? 'Sdílené poznámky — ' + (title || vault.slice(8)) : 'Moje poznámky',
+    title: vault === 'firma' && firmyList().length < 2 ? 'Firemní poznámky'
+      : firma ? 'Firma — ' + (f ? f.nazev : vault.slice(6))
+      : shared ? 'Sdílené poznámky — ' + (title || vault.slice(8)) : 'Moje poznámky',
     fileUrl: (p) => `/api/vault-file?path=${encodeURIComponent(p)}` +
       (firma || shared ? '&vault=' + encodeURIComponent(vault) : '') +
       `&t=${encodeURIComponent(TOKEN)}`,
@@ -620,8 +624,11 @@ function openVault(path, vault, title) {
     openLink,
     toast,
     // Firemní: jen ke čtení podle práva účtu, správa přístupů pro adminy.
-    readonly: firma && !!STATE.firma && STATE.firma.level === 'read',
-    admin: firma && !!STATE.firma && !!STATE.firma.admin,
+    readonly: firma && (vault === 'firma' ? !!STATE.firma && STATE.firma.level === 'read'
+                                          : !f || f.role === 'host'),
+    admin: vault === 'firma' && !!STATE.firma && !!STATE.firma.admin,
+    // Mazat ve firmě: kapitán a člen s právem mazat (gateway/firmy.py).
+    mazat: firma && !!f && (f.role === 'kapitan' || !!f.mazat),
     obsidian: !firma && !shared && !onServer() && !!STATE.obsidian,
     openInObsidian: (p) => api('open-path', {kind: 'vault-note', file: p})
       .catch(() => toast('Obsidian se nepodařilo otevřít.')),
@@ -648,7 +655,10 @@ let sharedVaults = [];
 let sharedCizi = [];       // správce: sdílené, ve kterých není (jen spravovat, obsah nevidí)
 function vaultList() {
   const out = [{id: '', name: 'Moje poznámky'}];
-  if (STATE.firma && STATE.firma.vault) out.push({id: 'firma', name: 'Firemní'});
+  const firmy = firmyList();
+  for (const f of firmy) {
+    out.push({id: firmaVaultId(f), name: firmy.length < 2 && f.zkratka === 'firma' ? 'Firemní' : f.nazev});
+  }
   for (const v of sharedVaults) {
     if (!v.needs_restart) out.push({id: 'sdilene:' + v.slug, name: v.name, shared: true});
   }
@@ -665,16 +675,146 @@ const firmaLater = new Set();          // „Později": do obnovení stránky se
 const firmaWarned = new Set();         // o zadrženém návrhu stačí říct jednou
 let firmaBusy = false;                 // nahrávání z firemního tabu běží
 
-/* Firemní tab: Claude v něm pracuje nad firemním Obsidianem a zapisuje do něj
-   rovnou — souhlas dal uživatel tím, že tab otevřel. Otevírá se ze dvou míst
-   (lišta tabů i uvítání), tak ať obě dělají doopravdy totéž. */
-function openFirmaTab() {
-  return openTab({kind: 'project', path: STATE.home, title: onServer() ? 'Server firemní' : 'Firemní chat',
-                  agent: 'claude', vault: 'firma'});
+/* ── prostor okna: osobní, nebo firma (gateway/firmy.py) ─────────────────────
+   Každé okno je buď v osobním prostoru, nebo v jedné firmě (přepínač vedle
+   „Server" v hlavičce, sessionStorage — jiné okno, jiná firma). Podle prostoru
+   se řídí nový chat, seznam chatů, taby, Projekty (ve firmě Klienti), Obsidian
+   i úvodní stránka. Chat firmy běží ve složce ~/firmy/<zkratka>[/<klient>/
+   <podkategorie>] — podle ní hub pozná, kam chat patří, i po letech.
+   Dnešní firemní trezor je firma `firma` (vault 'firma'). */
+function firmyList() {
+  const f = STATE && STATE.firma;
+  if (!f) return [];
+  if (Array.isArray(f.firmy)) return f.firmy;
+  // Starší brána: jen dnešní firemní trezor.
+  return f.vault ? [{zkratka: 'firma', nazev: 'Firemní', role: f.level === 'read' ? 'host' : 'clen'}] : [];
+}
+function hasFirma() { return firmyList().length > 0; }
+function firmaVaultId(f) { return f.zkratka === 'firma' ? 'firma' : 'firma:' + f.zkratka; }
+function isFirmaVault(v) { return v === 'firma' || /^firma:/.test(v || ''); }
+function firmaOf(v) {
+  const slug = v === 'firma' ? 'firma' : String(v || '').slice(6);
+  return firmyList().find((f) => f.zkratka === slug) || null;
+}
+const ROLE_FIRMY = {kapitan: 'kapitán', clen: 'člen', host: 'host'};
+/* Firma, která pracuje pro sebe (druh `projekty`): místo Klienti › klient ›
+   podkategorie má rovnou Projekty › projekt (gateway/firmy.py DRUHY). */
+function jeProjekty(f) { return !!f && f.druh === 'projekty'; }
+
+/* Zkratka firmy okna, nebo '' (osobní prostor). */
+function prostor() {
+  let slug = '';
+  try {
+    slug = sessionStorage.getItem('hub-prostor');
+    if (slug === null) slug = localStorage.getItem('hub-prostor-posledni') || '';
+  } catch (e) { slug = ''; }
+  return firmyList().some((f) => f.zkratka === slug) ? slug : '';
+}
+function prostorFirma() {
+  const slug = prostor();
+  return slug ? firmyList().find((f) => f.zkratka === slug) : null;
+}
+function setProstor(slug, keepTab) {
+  try {
+    sessionStorage.setItem('hub-prostor', slug || '');
+    localStorage.setItem('hub-prostor-posledni', slug || '');
+  } catch (e) { /* bez úložiště */ }
+  applyProstor(keepTab);
+}
+
+/* Pracovní složka chatu firmy (core.FIRMY_PRACE). */
+function firmaPrace(slug, klient, podkat) {
+  return [STATE.home, 'firmy', slug, klient, podkat].filter(Boolean).join('/');
+}
+/* Do které firmy patří složka (chat, tab): zkratka, nebo '' (osobní). */
+function prostorCesty(path) {
+  const base = (STATE.home || '') + '/firmy/';
+  const p = String(path || '');
+  if (!STATE.home || !p.startsWith(base)) return '';
+  const slug = p.slice(base.length).split('/')[0];
+  return firmyList().some((f) => f.zkratka === slug) ? slug : '';
+}
+function tabProstor(t) {
+  if (t && isFirmaVault(t.vault)) {
+    const f = firmaOf(t.vault);
+    return f ? f.zkratka : '';
+  }
+  return prostorCesty(t && t.path);
+}
+
+/* Firemní tab: Claude v něm pracuje nad Obsidianem firmy a zapisuje do něj
+   rovnou — souhlas dal uživatel tím, že tab otevřel. Bez podkategorie je to
+   chat celé firmy, s ní chat té podkategorie (Claude začne jejím CLAUDE.md). */
+function openFirmaTab(slug, klient, podkat) {
+  const f = (slug && firmyList().find((x) => x.zkratka === slug)) || prostorFirma() || firmyList()[0];
+  if (!f) return null;
+  if (f.zkratka !== prostor()) setProstor(f.zkratka, true);
+  const title = [f.nazev, podkat || klient].filter(Boolean).join(' · ');
+  return openTab({kind: 'project', path: firmaPrace(f.zkratka, klient, podkat), title,
+                  agent: 'claude', vault: firmaVaultId(f)});
+}
+
+/* Nový chat v prostoru okna: ve firmě chat firmy, jinak osobní. */
+function newChatHere(agentId) {
+  if (prostorFirma()) return openFirmaTab();
+  const a = agentId ? agentById(agentId) : (agentById(STATE.default_agent) || agentList(true)[0]);
+  if (!a) return HubSettings.open({...hubIO(), state: STATE, tab: 'agenti'});
+  return openTab({kind: 'project', path: STATE.home, title: newTabLabel(), agent: a.id});
+}
+
+/* Přepínač prostoru v hlavičce: osobní, firmy a správa. */
+function renderProstorBtn() {
+  const b = $('btn-prostor');
+  if (!b) return;
+  const f = prostorFirma();
+  const zakladat = !!(STATE.firma && STATE.firma.zakladat);
+  b.hidden = !onServer() || (!hasFirma() && !zakladat);
+  b.classList.toggle('firma', !!f);
+  b.querySelector('.prostor-name').textContent = f ? f.nazev : 'Osobní';
+  b.title = f ? 'Okno pracuje pro firmu ' + f.nazev + ' (' + ROLE_FIRMY[f.role] + ') — klikni pro přepnutí'
+              : 'Okno je v osobním prostoru — klikni pro přepnutí na firmu';
+}
+function prostorMenu(ev) {
+  const r = ev.currentTarget.getBoundingClientRect();
+  const now = prostor();
+  const items = [{icon: 'i-user', label: 'Osobní prostor', on: !now, run: () => setProstor('')}];
+  for (const f of firmyList()) {
+    items.push({icon: 'i-folder', label: f.nazev + ' · ' + ROLE_FIRMY[f.role], on: now === f.zkratka,
+                color: 'var(--firma)', run: () => setProstor(f.zkratka)});
+  }
+  if (STATE.firma && STATE.firma.zakladat) {
+    items.push({icon: 'i-plus', label: 'Založit firmu…', run: () => spravaFirem()});
+  }
+  if (firmyList().some((f) => f.role === 'kapitan')) {
+    items.push({icon: 'i-gear', label: 'Spravovat firmy…', run: () => spravaFirem()});
+  }
+  showMenu(r.left, r.bottom, items);
+}
+function spravaFirem() {
+  HubSettings.open({...hubIO(), state: STATE, tab: 'firmy'});
+}
+
+/* Přepnutí prostoru: překreslí všechno, co se podle něj řídí. Tab z jiného
+   prostoru se schová (běží dál); `keepTab` = přepíná se kvůli tabu samotnému. */
+function applyProstor(keepTab) {
+  if (!STATE || !STATE.config) return;
+  const f = prostorFirma();
+  document.documentElement.dataset.prostor = f ? 'firma' : '';
+  renderProstorBtn();
+  renderNewTabButtons();
+  const nav = $('nav-projekty');
+  if (nav) nav.lastChild.textContent = f && !jeProjekty(f) ? ' Klienti' : ' Projekty';
+  for (const t of TABS) if (t.el) t.el.hidden = tabProstor(t) !== prostor();
+  paintSdileneProstor();
+  if (typeof renderRelace === 'function' && RELACE) renderRelace();
+  if (!keepTab && ACTIVE && tabProstor(ACTIVE) !== prostor()) activate(null);
+  renderChats();
+  if (!$('projekty-page').hidden) renderProjekty();
+  if (!ACTIVE) { renderWelcome(); renderWelcomeOpen(); }
 }
 
 function renderFirma() {
-  const on = !!(STATE.firma && STATE.firma.vault);
+  const on = hasFirma();
   // Tlačítka v liště („osobní" a „firemní") řeší renderNewTabButtons.
   if (!on) return;
   renderShared();
@@ -879,7 +1019,8 @@ async function sharedPost(body) {
 }
 
 /* Okno s výběrem lidí (a názvem). Vrací {name, emails} nebo null. */
-function peopleDialog({title, note, withName, chosen, ok, withWrite, chosenWrite, hint}) {
+function peopleDialog({title, note, withName, chosen, ok, withWrite, chosenWrite, hint,
+                       groups, chosenGroups, chosenGroupsWrite, people = sharedPeople}) {
   return new Promise((resolve) => {
     const me = ((STATE.config && STATE.config.gateway_user) || {}).email || '';
     const wrap = document.createElement('div');
@@ -903,7 +1044,7 @@ function peopleDialog({title, note, withName, chosen, ok, withWrite, chosenWrite
     const picked = new Set(chosen || []);
     const writers = new Set(chosenWrite || []);
     const list = wrap.querySelector('.who-people');
-    for (const p of sharedPeople) {
+    for (const p of people) {
       if (p.email === me) continue;
       const row = document.createElement('label');
       row.className = 'acc-row who-row';
@@ -939,14 +1080,59 @@ function peopleDialog({title, note, withName, chosen, ok, withWrite, chosenWrite
       }
       list.appendChild(row);
     }
+    // Podkategorie firem (gateway/firmy.py): uvidí každý, kdo do ní vidí —
+    // i ten, kdo k ní přibude později.
+    const gPicked = new Set(chosenGroups || []);
+    const gWriters = new Set(chosenGroupsWrite || []);
+    if (groups && groups.length) {
+      const h = document.createElement('p');
+      h.className = 'who-hint';
+      h.textContent = 'Podkategorie firem — uvidí každý, kdo do ní vidí:';
+      list.appendChild(h);
+    }
+    for (const g of groups || []) {
+      const row = document.createElement('label');
+      row.className = 'acc-row who-row firma';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = gPicked.has(g.id);
+      let wcb = null;
+      cb.onchange = () => {
+        if (cb.checked) gPicked.add(g.id); else { gPicked.delete(g.id); gWriters.delete(g.id); }
+        if (wcb) { wcb.disabled = !cb.checked; if (!cb.checked) wcb.checked = false; }
+      };
+      const who = document.createElement('div');
+      who.className = 'acc-who';
+      const strong = document.createElement('strong');
+      strong.textContent = g.nazev;
+      who.append(strong);
+      row.append(cb, who);
+      if (withWrite) {
+        const wl = document.createElement('label');
+        wl.className = 'who-write';
+        wl.title = 'Psát smí každý z podkategorie — jeho zprávy dostane tvůj Claude a pracuje na nich s tvými právy';
+        wcb = document.createElement('input');
+        wcb.type = 'checkbox';
+        wcb.checked = gWriters.has(g.id);
+        wcb.disabled = !cb.checked;
+        wcb.onchange = () => (wcb.checked ? gWriters.add(g.id) : gWriters.delete(g.id));
+        wl.append(wcb, document.createTextNode(' smí psát'));
+        row.append(wl);
+      }
+      list.appendChild(row);
+    }
     const done = (value) => { wrap.remove(); resolve(value); };
     for (const b of wrap.querySelectorAll('.pd-close')) b.onclick = () => done(null);
     wrap.addEventListener('click', (ev) => { if (ev.target === wrap) done(null); });
     wrap.querySelector('.pd-ok').onclick = () => {
       const name = wrap.querySelector('.pd-name input').value.trim();
       if (withName && !name) return toast('Napiš název.');
-      if (!picked.size) return toast('Vyber aspoň jednoho člověka.');
-      done({name, emails: [...picked], psat: [...writers].filter((e) => picked.has(e))});
+      if (!picked.size && !gPicked.size) {
+        return toast(groups && groups.length ? 'Vyber aspoň jednoho člověka nebo podkategorii.'
+                                             : 'Vyber aspoň jednoho člověka.');
+      }
+      done({name, emails: [...picked], psat: [...writers].filter((e) => picked.has(e)),
+            skupiny: [...gPicked], skupiny_psat: [...gWriters].filter((g) => gPicked.has(g))});
     };
     document.body.appendChild(wrap);
     if (withName) wrap.querySelector('.pd-name input').focus();
@@ -1089,7 +1275,7 @@ function showFirmaCard(p, total) {
   const writes = kind === 'firma' || kind === 'sdilene-zapis';
   const where = p.nazev ? `„${p.nazev}“` : '';
   const titles = {
-    'firma': 'Nahrát do firemního Obsidianu?',
+    'firma': p.firma && p.firma_nazev ? `Nahrát do firmy „${p.firma_nazev}“?` : 'Nahrát do firemního Obsidianu?',
     'sdilene-zapis': `Nahrát do sdíleného Obsidianu ${where}?`,
     'sdilene-zalozit': `Založit sdílený Obsidian ${where}?`,
     'sdilene-clenove': `Změnit členy sdíleného Obsidianu ${where}?`,
@@ -1240,13 +1426,15 @@ async function loadChats() {
 function renderChats() {
   const box = $('chats');
   const words = foldText($('chats-search').value.trim()).split(/\s+/).filter(Boolean);
+  // Jen chaty prostoru okna: ve firmě její, v osobním prostoru osobní.
+  const here = STATE && STATE.config ? CHATS.filter((c) => prostorCesty(c.cwd) === prostor()) : CHATS;
   const list = words.length
-    ? CHATS.filter((c) => {
+    ? here.filter((c) => {
       const hay = foldText([c.title, c.prompt, c.project].join(' '));
       return words.every((w) => hay.includes(w));
     })
-    : CHATS;
-  $('chats-count').textContent = CHATS.length ? String(CHATS.length) : '';
+    : here;
+  $('chats-count').textContent = here.length ? String(here.length) : '';
   box.textContent = '';
   if (!list.length) {
     const note = document.createElement('div');
@@ -1353,8 +1541,11 @@ async function resumeChat(c, prompt, preneseny) {
                  'Otevřít její kopii? Původní konverzace zůstane, jak je.', {title: 'Konverzace možná běží jinde', ok: 'Otevřít kopii'}))) return;
     fork = true;
   }
+  // Chat firmy (běží ve ~/firmy/<zkratka>/…) se vrátí i s firmou.
+  const slug = prostorCesty(c.cwd);
+  const f = slug ? firmyList().find((x) => x.zkratka === slug) : null;
   openTab({kind: 'project', path: c.cwd, title: c.title.slice(0, 40), agent: 'claude',
-           resume: c.id, fork, prompt: prompt || ''});
+           resume: c.id, fork, prompt: prompt || '', vault: f ? firmaVaultId(f) : ''});
   closeDrawer();
   setTimeout(loadChats, 4000);
 }
@@ -1550,7 +1741,7 @@ async function prenosPoll() {
 /* ── Sdílené chaty (gateway/relace.py) ──────────────────────────────────────
    Majitel sdílí rozběhnutý chat s kolegy; ti ho živě sledují (a když smí, píšou
    do něj). Jen na serveru — na počítači nemá kdo se dívat. */
-let RELACE = {moje: [], semnou: [], lide: []};
+let RELACE = {moje: [], semnou: [], lide: [], skupiny: [], ulozene: []};
 let relaceTimer = null;
 const relaceZnama = new Set();
 
@@ -1619,18 +1810,58 @@ async function sdiletChat(tab) {
     withWrite: true,
     chosen: now ? now.clenove.map((c) => c.email) : [],
     chosenWrite: now ? now.clenove.filter((c) => c.pise).map((c) => c.email) : [],
+    groups: RELACE.skupiny || [],
+    chosenGroups: now ? (now.skupiny || []).map((g) => g.id) : [],
+    chosenGroupsWrite: now ? (now.skupiny || []).filter((g) => g.pise).map((g) => g.id) : [],
   });
   if (!got) return;
   try {
-    // Chat se jmenuje „Chat“ — v seznamu kolegy by nic neřekl, tak první zadání.
-    const zadani = tab.cteni && tab.cteni.prehled && (tab.cteni.prehled().zadani || [])[0];
-    const titulek = (tab.title && !TITULKY_BEZ_JMENA.test(tab.title)) ? tab.title
-      : (zadani && zadani.text ? zadani.text.slice(0, 60) : 'Chat');
+    const titulek = chatTitulek(tab);
     const res = await relacePost({akce: 'zalozit', chat, titulek,
-                                  emaily: got.emails, psat: got.psat});
+                                  emaily: got.emails, psat: got.psat,
+                                  skupiny: got.skupiny, skupiny_psat: got.skupiny_psat});
     toast(res.message || 'Chat je sdílený.');
   } catch (err) { toast(err.message); }
   loadRelace();
+}
+
+// Chat se jmenuje „Chat“ — v seznamu kolegy by nic neřekl, tak první zadání.
+function chatTitulek(tab) {
+  const zadani = tab.cteni && tab.cteni.prehled && (tab.cteni.prehled().zadani || [])[0];
+  return (tab.title && !TITULKY_BEZ_JMENA.test(tab.title)) ? tab.title
+    : (zadani && zadani.text ? zadani.text.slice(0, 60) : 'Chat');
+}
+
+/* Uložit chat do podkategorie firmy (gateway/relace.py): kopie, na kterou
+   kdokoli s přístupem naváže přes „Pokračovat u sebe“ — i když tu autor
+   už nebude. Jen na pokyn, nic se neukládá samo. */
+async function ulozitChat(tab) {
+  const chat = tab.chat || tab.resume;
+  if (!chat) return toast('Tenhle chat se ještě nedá uložit — pošli v něm aspoň jednu zprávu.');
+  if (!(RELACE.skupiny || []).length) await loadRelace();
+  if (!(RELACE.skupiny || []).length) return toast('Nevidíš žádnou podkategorii firmy, kam by šel chat uložit.');
+  const got = await peopleDialog({
+    title: 'Uložit chat do podkategorie', ok: 'Uložit', people: [],
+    note: 'Kopie chatu, jak je teď. Kdo do podkategorie vidí, v ní může pokračovat u sebe.',
+    hint: 'Kam chat uložit:', groups: RELACE.skupiny,
+  });
+  if (!got) return;
+  try {
+    const res = await relacePost({akce: 'ulozit', chat, titulek: chatTitulek(tab), skupiny: got.skupiny});
+    toast(res.message || 'Chat je uložený.');
+  } catch (err) { toast(err.message); }
+  loadRelace();
+}
+
+async function pokracovatUlozeny(u) {
+  toast('Kopíruju chat k tobě…');
+  try {
+    const r = await relaceGw('/pokracovat', {ulozeny: u.id});
+    if (!r || !r.chat) throw new Error('Chat se nepodařilo zkopírovat.');
+    await otevriPrenesenyChat(r.chat);
+    await prenosApi({akce: 'hotovo', chat: r.chat}).catch(() => {});
+    toast('Chat je u tebe — pokračuješ v něm sám.');
+  } catch (err) { toast(err.message); }
 }
 
 async function zrusitSdileni(rel) {
@@ -1648,8 +1879,28 @@ function renderRelace() {
   if (!box) return;
   const list = $('relace-list');
   list.textContent = '';
-  box.hidden = !onServer() || !RELACE.semnou.length;
-  for (const s of RELACE.semnou) {
+  // Uložené a podkategorii sdílené chaty jen v prostoru své firmy.
+  const ulozene = (RELACE.ulozene || []).filter((u) => !u.firma || u.firma === prostor());
+  const semnou = RELACE.semnou.filter(sdilenyVProstoru);
+  box.hidden = !onServer() || (!semnou.length && !ulozene.length);
+  for (const u of ulozene) {
+    const row = document.createElement('button');
+    row.className = 'chat-item relace-row firma';
+    const t = document.createElement('span');
+    t.className = 'chat-title';
+    t.textContent = u.titulek;
+    const m = document.createElement('span');
+    m.className = 'chat-meta';
+    m.textContent = 'Uloženo v ' + u.skupina + ' · ' + (u.moje ? 'ty' : u.autor) + ' · klepni a pokračuj u sebe';
+    row.append(t, m);
+    row.title = 'Zkopíruje chat do tvého prostoru a otevře ho — Claude v něm naváže, kde skončil.';
+    row.onclick = () => {
+      pokracovatUlozeny(u);
+      if (window.HubMobile) HubMobile.closeDrawer();
+    };
+    list.appendChild(row);
+  }
+  for (const s of semnou) {
     const row = document.createElement('button');
     row.className = 'chat-item relace-row';
     const t = document.createElement('span');
@@ -1688,6 +1939,24 @@ function popisSdilenyTab(st) {
   st.el.title = `${s.titulek}\nSdílí ${s.majitel} — ` + (s.role === 'pise' ? 'smíš psát' : 'jen čtení');
 }
 
+/* Sdílený chat patří do prostoru okna? Sdílený podkategorii (projektu)
+   firmy jen do prostoru té firmy; jmenovitě sdílený do všech. */
+function sdilenyVProstoru(s) {
+  const firmy = (s && s.skupiny || []).map((g) => String(g.id || '').split(':')[0]);
+  return !firmy.length || firmy.includes(prostor());
+}
+function paintSdileneProstor() {
+  for (const st of SDILENE_TABY.values()) {
+    st.el.hidden = !sdilenyVProstoru(st.share);
+    // Otevřený sdílený chat jiného prostoru se zavře do úvodní stránky.
+    if (st.el.hidden && st.el.classList.contains('active')) {
+      st.el.classList.remove('active');
+      st.pane.classList.remove('active');
+      if (!ACTIVE) $('welcome').hidden = false;
+    }
+  }
+}
+
 function otevriSdilenyTab(s, aktivovat) {
   relaceZavrene.delete(s.id);
   ulozZavrene();
@@ -1711,6 +1980,7 @@ function otevriSdilenyTab(s, aktivovat) {
     if (relaceHotovo) el.classList.add('hotovo');
   }
   st.share = s;
+  st.el.hidden = !sdilenyVProstoru(s);
   popisSdilenyTab(st);
   if (aktivovat) aktivujSdileny(st);
   return st;
@@ -1933,12 +2203,18 @@ function prehledHtml(tab, box) {
      se právě dívá. */
   if (onServer() && (tab.chat || tab.resume)) {
     const rel = relaceTabu(tab);
-    const s = sekce('Sdílení', rel ? String(rel.clenove.length) : '');
+    const s = sekce('Sdílení', rel ? String(rel.clenove.length + (rel.skupiny || []).length) : '');
     if (!rel) {
       s.appendChild(mk('div', 'pr-napoveda', 'Kolega uvidí tenhle chat živě — i kód, který Claude píše.'));
       const b = mk('button', 'btn ghost pr-sdilet', 'Sdílet chat…');
       b.onclick = () => sdiletChat(tab);
       s.appendChild(b);
+      if ((RELACE.skupiny || []).length) {
+        const u = mk('button', 'btn ghost pr-sdilet', 'Uložit do podkategorie…');
+        u.title = 'Kopie chatu do podkategorie firmy — kdo tam vidí, v ní může pokračovat.';
+        u.onclick = () => ulozitChat(tab);
+        s.appendChild(u);
+      }
     } else {
       // U každého člena: je tu (zelená tečka) / píše teď (pulzuje) / není.
       for (const c of rel.clenove) {
@@ -1951,12 +2227,25 @@ function prehledHtml(tab, box) {
         r.title = pise ? jm + ' právě píše' : tu ? jm + ' se právě dívá' : jm + ' tu teď není';
         s.appendChild(r);
       }
+      // Podkategorie firem: vidí každý, kdo do ní vidí.
+      for (const g of rel.skupiny || []) {
+        const r = mk('div', 'pr-radek pr-clen');
+        r.append(mk('span', 'pr-tecka'), mk('span', 'pr-text', g.nazev),
+                 mk('span', 'pr-druh', g.pise ? 'smí psát' : 'čte'));
+        r.title = 'Podkategorie firmy — chat vidí každý, kdo do ní vidí';
+        s.appendChild(r);
+      }
       const btns = mk('div', 'pr-sdileni-btns');
       const e = mk('button', 'btn ghost pr-sdilet', 'Upravit…');
       e.onclick = () => sdiletChat(tab);
       const z = mk('button', 'btn ghost pr-sdilet', 'Přestat sdílet');
       z.onclick = () => zrusitSdileni(rel);
       btns.append(e, z);
+      if ((RELACE.skupiny || []).length) {
+        const u = mk('button', 'btn ghost pr-sdilet', 'Uložit do podkategorie…');
+        u.onclick = () => ulozitChat(tab);
+        btns.append(u);
+      }
       s.appendChild(btns);
     }
     neco = true;
@@ -2439,21 +2728,15 @@ function renderWelcome() {
   const box = $('welcome-actions');
   box.textContent = '';
   const cfg = STATE.config.newtab || {};
-  const firma = !!(STATE.firma && STATE.firma.vault);
   const actions = [];
   if (cfg.agent !== false && cfg.claude !== false) {
     const a = agentById(STATE.default_agent) || agentList(true)[0];
     if (a) {
       // Stejné pojmenování jako v liště tabů: kde se bude pracovat.
-      actions.push(['i-terminal', novyChatText(), 'primary',
-        () => openTab({kind: 'project', path: STATE.home, title: newTabLabel(),
-                       agent: a.id})]);
-      // Firemní trezor má vlastní tlačítko i tady, ne jen v liště tabů — a
-      // fialové, ať je hned vidět, že se v něm píše do firemního Obsidianu.
-      if (firma) {
-        actions.push(['i-terminal', onServer() ? 'Server firemní' : 'Firemní chat', 'primary firma',
-          () => openFirmaTab()]);
-      }
+      // Nový chat v prostoru okna — ve firmě fialový a pro firmu.
+      const f = prostorFirma();
+      actions.push(['i-terminal', f ? 'Nový chat · ' + f.nazev : novyChatText(),
+        f ? 'primary firma' : 'primary', () => newChatHere()]);
     }
   }
   if (cfg.shell !== false && STATE.config.dev_mode) {
@@ -2480,6 +2763,7 @@ function renderWelcome() {
   }
 
   renderWelcomeCols();
+  renderWelcomeFirmy();
   renderWelcomeStats();
   HubStats.planNaUvodu(hubIO(), $('welcome-usage'));
   renderWelcomeUpdate();
@@ -2591,7 +2875,7 @@ function renderWelcomeOpen() {
   const box = $('welcome-open');
   if (!box) return;
   box.textContent = '';
-  const tabs = TABS.filter(t => !t.exited);
+  const tabs = TABS.filter(t => !t.exited && tabProstor(t) === prostor());
   box.hidden = !tabs.length;
   if (!tabs.length) return;
   box.appendChild(Object.assign(document.createElement('div'),
@@ -2607,16 +2891,96 @@ function renderWelcomeOpen() {
     b.querySelector('.wcol-name').textContent = t.title;
     const dot = t.el && t.el.querySelector('.tab-agent');
     const color = dot && dot.style.getPropertyValue('--agent-color');
-    if (t.vault === 'firma') b.querySelector('.open-dot').style.background = 'var(--firma)';
+    if (isFirmaVault(t.vault)) b.querySelector('.open-dot').style.background = 'var(--firma)';
     else if (color) b.querySelector('.open-dot').style.background = color;
     b.onclick = () => activate(t);
     box.appendChild(b);
   }
 }
 
+/* Firmy na úvodní stránce: v osobním prostoru dlaždice firem (klik = okno
+   přejde do firmy), ve firmě její přehled — klienti a podkategorie s chatem. */
+function renderWelcomeFirmy() {
+  const box = $('welcome-firmy');
+  if (!box) return;
+  box.textContent = '';
+  const f = prostorFirma();
+  const zakladat = !!(STATE.firma && STATE.firma.zakladat);
+  box.hidden = !onServer() || (!hasFirma() && !zakladat);
+  if (box.hidden) return;
+  const title = (text) => box.appendChild(Object.assign(document.createElement('div'),
+    {className: 'wcol-title', textContent: text}));
+  if (!f) {
+    title('Tvoje firmy');
+    const row = document.createElement('div');
+    row.className = 'wf-cards';
+    for (const x of firmyList()) {
+      const b = document.createElement('button');
+      b.className = 'wf-card';
+      b.innerHTML = '<span class="wf-name"></span><span class="wf-role"></span>';
+      b.querySelector('.wf-name').textContent = x.nazev;
+      b.querySelector('.wf-role').textContent = ROLE_FIRMY[x.role] || x.role;
+      b.title = 'Přepnout okno do firmy ' + x.nazev;
+      b.onclick = () => setProstor(x.zkratka);
+      row.appendChild(b);
+    }
+    if (zakladat) {
+      const add = document.createElement('button');
+      add.className = 'wf-card wf-add';
+      add.innerHTML = icon('i-plus') + '<span>Založit firmu</span>';
+      add.onclick = spravaFirem;
+      row.appendChild(add);
+    }
+    box.appendChild(row);
+    return;
+  }
+  title(f.nazev + ' · ' + (ROLE_FIRMY[f.role] || f.role));
+  if (!KLIENTI[f.zkratka]) loadKlienti(f.zkratka);
+  const list = document.createElement('div');
+  list.className = 'wf-klienti';
+  const chip = (label, run, cls) => {
+    const b = document.createElement('button');
+    b.className = 'wf-chip' + (cls ? ' ' + cls : '');
+    b.textContent = label;
+    b.onclick = run;
+    return b;
+  };
+  const projekty = jeProjekty(f);
+  if (projekty) {
+    // Firma pro sebe: rovnou projekty, klik = chat v projektu.
+    const row = document.createElement('div');
+    row.className = 'wf-klient';
+    for (const k of KLIENTI[f.zkratka] || []) row.appendChild(chip(k.nazev, () => openFirmaTab(f.zkratka, k.nazev), 'wf-k'));
+    if (row.childNodes.length) list.appendChild(row);
+  } else {
+    for (const k of KLIENTI[f.zkratka] || []) {
+      const row = document.createElement('div');
+      row.className = 'wf-klient';
+      row.appendChild(chip(k.nazev, () => openFirmaTab(f.zkratka, k.nazev), 'wf-k'));
+      for (const p of k.podkategorie) row.appendChild(chip(p, () => openFirmaTab(f.zkratka, k.nazev, p)));
+      list.appendChild(row);
+    }
+  }
+  if (!(KLIENTI[f.zkratka] || []).length) {
+    list.appendChild(Object.assign(document.createElement('div'), {className: 'wf-empty',
+      textContent: !KLIENTI[f.zkratka] ? 'Načítám…'
+        : projekty ? 'Zatím žádný projekt, do kterého vidíš.' : 'Zatím žádný klient, do kterého vidíš.'}));
+  }
+  box.appendChild(list);
+  const acts = document.createElement('div');
+  acts.className = 'wf-acts';
+  acts.append(chip(projekty ? 'Všechny projekty ›' : 'Všichni klienti ›', () => showProjekty(true), 'wf-link'),
+              chip('Obsidian firmy ›', () => openVault('', firmaVaultId(f)), 'wf-link'));
+  if (f.role === 'kapitan') acts.append(chip('Spravovat firmu ›', spravaFirem, 'wf-link'));
+  box.appendChild(acts);
+}
+
 function renderWelcomeCols() {
   const wrap = $('welcome-cols');
   wrap.textContent = '';
+  // Ve firmě jsou místo osobních projektů klienti (renderWelcomeFirmy).
+  wrap.hidden = !!prostorFirma();
+  if (wrap.hidden) return;
   const live = (STATE.projects || []).filter(p => !p.archived);
   const recent = [...live].sort((a, b) => b.mtime - a.mtime).slice(0, 4);
   const dirty = live.filter(p => p.dirty)
@@ -2699,11 +3063,6 @@ function renderDoctor() {
 /* Které „+" tlačítko se ukazuje. Kdo jede jen v agentovi, nechce vedle sebe
    pořád tlačítko na holý shell — a naopak. Klíč `claude` je tu z verzí do 1.6,
    kde se tlačítko tak jmenovalo; starý konfig se tím pádem nemusí přepisovat. */
-/* Na serveru s firemním Obsidianem se chaty jmenují podle toho, kde pracují:
-   „Server osobní" a „Server firemní" (fialový). Jinde je to prostě „Nový chat". */
-function naServeruSFirmou() {
-  return onServer() && !!(STATE.firma && STATE.firma.vault);
-}
 /* Na počítači, který je připojený k serveru, je potřeba rozlišit, kde chat poběží:
    „PC" (tady) × „Server osobní" / „Server firemní" (tam). Bez serveru zůstává „Nový chat". */
 function naPcSeServerem() {
@@ -2712,7 +3071,7 @@ function naPcSeServerem() {
 }
 /* Text tlačítka pro nový chat. */
 function novyChatText() {
-  if (naServeruSFirmou()) return 'Server osobní';
+  // Ve firmě je „Nový chat" fialový a otevře chat firmy (prostor okna).
   return naPcSeServerem() ? 'PC' : 'Nový chat';
 }
 const TITULKY_BEZ_JMENA = /^(Chat|Rozhovor|Osobní chat|Server osobní|Server firemní|Firemní chat|PC)$/;
@@ -2721,8 +3080,9 @@ function newTabLabel() {
   // Tlačítko říká, KDE se bude pracovat, ne kdo to odpracuje — to je vidět
   // na odznaku agenta a v popisku. Na počítači „PC", v prostoru „Server";
   // kde je firemní trezor, je potřeba rozlišit i nad čím Claude pojede.
-  const firma = !!(STATE.firma && STATE.firma.vault);
-  return onServer() && firma ? 'Server osobní' : naPcSeServerem() ? 'PC' : 'Chat';
+  // Kde se pracuje, říká prostor okna (přepínač v hlavičce) — taby jiného
+  // prostoru v liště nejsou, takže „Server osobní" už rozlišovat netřeba.
+  return naPcSeServerem() ? 'PC' : 'Chat';
 }
 
 function renderNewTabButtons() {
@@ -2733,17 +3093,19 @@ function renderNewTabButtons() {
   // vedle tabů tlačítko, které nikdy nezmáčkne — a když ho zmáčkne omylem,
   // kouká do shellu a neví, kde je.
   $('btn-new-shell').hidden = cfg.shell === false || !STATE.config.dev_mode;
-  const firma = !!(STATE.firma && STATE.firma.vault);
-  $('btn-new-firma').hidden = !firma;
-  const fl = $('btn-new-firma').querySelector('span');
-  if (fl) fl.textContent = onServer() ? 'Server firemní' : 'Firemní';
+  // Firma okna má jediné „+ Nový chat" (fialové) — samostatné firemní tlačítko
+  // nahradil přepínač prostoru v hlavičce.
+  const firma = !!prostorFirma();
+  $('btn-new-firma').hidden = true;
+  btn.classList.toggle('firma', firma);
   // Panel vlevo: „Server osobní" a pod ním fialový „Server firemní".
   const dn = $('btn-drawer-new');
   if (dn) dn.querySelector('.nav-text').textContent = novyChatText();
   const df = $('btn-drawer-firma');
-  if (df) df.hidden = !naServeruSFirmou();
+  if (df) df.hidden = true;
+  if (dn) dn.classList.toggle('firma', firma);
   // Jedno „+" na telefonu: schová se jen tehdy, když by pod ním nic nebylo.
-  $('btn-new-menu').hidden = btn.hidden && !firma && $('btn-new-shell').hidden;
+  $('btn-new-menu').hidden = btn.hidden && $('btn-new-shell').hidden;
   const a = agentById(STATE.default_agent) || agentList(true)[0];
   const label = btn.querySelector('span');
   if (a && label) {
@@ -2775,6 +3137,7 @@ async function reload() {
   renderDoctor();
   renderWelcome();
   renderNewTabButtons();
+  applyProstor();
   for (const t of TABS) paintAgent(t);
   applyMotiv(STATE.motiv);           // motiv (barvy + CSS) a s ním applyTheme
 }
@@ -3040,11 +3403,15 @@ function createTab({kind, path, title, id, agent, model, background, bypass, mod
   wireDrag(el, tab);
   $('tabbar').insertBefore(el, $('btn-new-agent'));
   tab.el = el;
+  // Tab z jiného prostoru (firma × osobní) v liště tohohle okna není; běží dál.
+  if (STATE && STATE.config && tabProstor(tab) !== prostor()) el.hidden = true;
   paintAgent(tab);   // až teď — dřív tab své tlačítko ještě nemá
 
   TABS.push(tab);
   // Při prvním načtení (restore) se nepřepíná — appka zůstane na Domů.
-  if (!background || (!ACTIVE && !START_HOME)) activate(tab);
+  // Obnovený tab z jiného prostoru okno nepřepíná — zůstane schovaný.
+  if (!background || (!ACTIVE && !START_HOME && (!STATE || !STATE.config
+                                                 || tabProstor(tab) === prostor()))) activate(tab);
   else if (!ACTIVE) renderWelcomeOpen();
   return tab;
 }
@@ -3056,7 +3423,7 @@ function createTab({kind, path, title, id, agent, model, background, bypass, mod
    fialová. Agent má svou barvu jen tam, kde je vedle ní i jeho jméno —
    u výchozího agenta by jinak barva neřekla nic, co už není vidět. */
 function dotColor(tab, a) {
-  if (tab && tab.vault === 'firma') return 'var(--firma)';
+  if (tab && isFirmaVault(tab.vault)) return 'var(--firma)';
   return (a && a.id !== (STATE.default_agent || 'claude')) ? a.color : 'var(--accent)';
 }
 
@@ -3092,7 +3459,7 @@ function recolor(tab, data) {
 function paintAgent(tab) {
   // Firemní tab je fialový celý — bublina, tlačítka i rámečky uvnitř. Stačí na
   // jeho panelu přebít barvu prostředí, ostatní styly si ji čtou samy.
-  if (tab.pane) tab.pane.classList.toggle('firma', tab.vault === 'firma');
+  if (tab.pane) tab.pane.classList.toggle('firma', isFirmaVault(tab.vault));
   const badge = tab.el && tab.el.querySelector('.tab-agent');
   if (!badge) return;
   const a = agentById(tab.agent || (tab.kind === 'shell' ? '' : STATE.default_agent));
@@ -3104,7 +3471,7 @@ function paintAgent(tab) {
   const jiny = a.id !== (STATE.default_agent || 'claude');
   badge.textContent = jiny ? a.short : '';
   badge.classList.toggle('named', !!badge.textContent);
-  tab.el.classList.toggle('firma', tab.vault === 'firma');
+  tab.el.classList.toggle('firma', isFirmaVault(tab.vault));
   // Samotná tečka (výchozí agent) nese barvu prostředí — na počítači
   // jantarová, v prostoru modrá, nad firemním trezorem fialová. Odznak se
   // jménem si drží barvu agenta, jinak by se agenti mezi sebou nerozeznali.
@@ -3121,6 +3488,10 @@ function measure(tab) {
 }
 
 function activate(tab) {
+  // Otevřít tab jiného prostoru = přepnout na něj celé okno.
+  if (tab && TABS.includes(tab) && STATE && STATE.config && tabProstor(tab) !== prostor()) {
+    setProstor(tabProstor(tab), true);
+  }
   ACTIVE = tab;
   document.dispatchEvent(new CustomEvent('hub-tab', {detail: tab ? {id: tab.id, title: tab.title, path: tab.path || ''} : null}));
   showProjekty(false);
@@ -3226,8 +3597,107 @@ function showProjekty(on) {
   if (!document.body.classList.contains('is-touch')) $('pp-q').focus();
 }
 
+/* ── Klienti: Projekty ve firmě ────────────────────────────────────────────
+   Klienti a podkategorie, do kterých člověk vidí (core.firma_klienti čte
+   trezor tak, jak je v sandboxu). U každé podkategorie chat přímo v ní. */
+const KLIENTI = {};                    // zkratka → [{nazev, podkategorie}]
+async function loadKlienti(slug) {
+  try {
+    KLIENTI[slug] = (await api('firma-klienti?firma=' + encodeURIComponent(slug))).klienti || [];
+  } catch (_) { KLIENTI[slug] = KLIENTI[slug] || []; }
+  if (prostor() !== slug) return;
+  if (!$('projekty-page').hidden) renderProjekty();
+  if (!ACTIVE) renderWelcomeFirmy();
+}
+function chatuV(path) {
+  return CHATS.filter((c) => c.cwd === path || String(c.cwd || '').startsWith(path + '/')).length;
+}
+function chatyText(n) { return n === 1 ? '1 chat' : n >= 2 && n <= 4 ? n + ' chaty' : n + ' chatů'; }
+
+/* Jeden řádek „podkategorie · počet chatů · + chat". */
+function klientRadek(f, klient, podkat) {
+  const row = document.createElement('div');
+  row.className = 'kl-row';
+  const name = document.createElement('button');
+  name.className = 'kl-name';
+  const projekt = jeProjekty(f);
+  name.textContent = podkat || (klient ? (projekt ? 'Chat v projektu' : 'Obecně o klientovi') : 'Celá firma');
+  name.title = 'Otevřít chat ' + (podkat ? 'v podkategorii ' + podkat
+    : klient ? (projekt ? 'v projektu ' : 'o klientovi ') + klient : 'celé firmy');
+  name.onclick = () => openFirmaTab(f.zkratka, klient, podkat);
+  const n = chatuV(firmaPrace(f.zkratka, klient, podkat));
+  const meta = document.createElement('span');
+  meta.className = 'kl-meta';
+  meta.textContent = n ? chatyText(n) : '';
+  const plus = document.createElement('button');
+  plus.className = 'btn ghost kl-plus';
+  plus.innerHTML = icon('i-plus') + '<span>chat</span>';
+  plus.onclick = name.onclick;
+  row.append(name, meta, plus);
+  return row;
+}
+
+function renderKlienti(f) {
+  const grid = $('pp-grid');
+  const projekty = jeProjekty(f);
+  $('pp-title').textContent = (projekty ? 'Projekty' : 'Klienti') + ' — ' + f.nazev;
+  $('pp-sort').hidden = true;
+  $('pp-q').parentElement.hidden = true;
+  $('pp-new').textContent = f.role === 'kapitan' ? 'Spravovat firmu' : 'Obsidian firmy';
+  $('pp-new').onclick = () => (f.role === 'kapitan' ? spravaFirem() : openVault('', firmaVaultId(f)));
+  grid.textContent = '';
+  if (!KLIENTI[f.zkratka]) { loadKlienti(f.zkratka); }
+  const firma = document.createElement('div');
+  firma.className = 'pp-card kl-card kl-firma';
+  firma.innerHTML = '<div class="pp-top"><span class="pp-ico"></span><span class="pp-name"></span></div>' +
+                    '<div class="pp-desc"></div>';
+  firma.querySelector('.pp-ico').innerHTML = icon('i-hub');
+  firma.querySelector('.pp-name').textContent = f.nazev;
+  firma.querySelector('.pp-desc').textContent = 'Obecné věci firmy — postupy, know-how, firemní skilly. ' +
+    'Tvoje role: ' + ROLE_FIRMY[f.role] + '.';
+  firma.appendChild(klientRadek(f));
+  const ob = document.createElement('button');
+  ob.className = 'linkbtn kl-link';
+  ob.textContent = 'Otevřít Obsidian firmy ›';
+  ob.onclick = () => openVault('', firmaVaultId(f));
+  firma.appendChild(ob);
+  grid.appendChild(firma);
+  const klienti = KLIENTI[f.zkratka] || [];
+  if (KLIENTI[f.zkratka] && !klienti.length) {
+    grid.appendChild(Object.assign(document.createElement('div'), {className: 'pp-empty',
+      textContent: projekty
+        ? (f.role === 'kapitan' ? 'Zatím tu nejsou žádné projekty — přidáš je ve Spravovat firmu.'
+                                : 'Zatím ti kapitán nezpřístupnil žádný projekt.')
+        : (f.role === 'kapitan' ? 'Zatím tu nejsou žádní klienti — přidáš je ve Spravovat firmu.'
+                                : 'Zatím ti kapitán nezpřístupnil žádného klienta.')}));
+  }
+  for (const k of klienti) {
+    const card = document.createElement('div');
+    card.className = 'pp-card kl-card';
+    card.innerHTML = '<div class="pp-top"><span class="pp-ico"></span><span class="pp-name"></span></div>';
+    card.querySelector('.pp-ico').innerHTML = icon('i-folder');
+    card.querySelector('.pp-name').textContent = k.nazev;
+    card.appendChild(klientRadek(f, k.nazev));
+    for (const p of k.podkategorie) card.appendChild(klientRadek(f, k.nazev, p));
+    if (!projekty && !k.podkategorie.length) {
+      card.appendChild(Object.assign(document.createElement('div'), {className: 'kl-meta kl-none',
+        textContent: f.role === 'kapitan' ? 'Zatím bez podkategorií — přidáš je ve Spravovat firmu.'
+                                          : 'Žádná podkategorie, do které vidíš.'}));
+    }
+    grid.appendChild(card);
+  }
+}
+
 function renderProjekty() {
   const grid = $('pp-grid');
+  const fp = prostorFirma();
+  if (fp) return renderKlienti(fp);
+  // Osobní prostor: Projekty jako dřív (Klienti si stránku přestaví).
+  $('pp-title').textContent = 'Projekty';
+  $('pp-sort').hidden = false;
+  $('pp-q').parentElement.hidden = false;
+  $('pp-new').textContent = 'Otevřít složku…';
+  $('pp-new').onclick = () => openPicker('');
   const needle = foldText($('pp-q').value.trim());
   const showArchived = !!STATE.config.show_archived;
   let list = STATE.projects.filter(p => (showArchived || !p.archived) &&
@@ -3414,7 +3884,9 @@ function closeTab(tab, {remote = false} = {}) {
   document.body.classList.toggle('neco-ceka', TABS.some(t => t.ceka));
   document.title = titulekOkna(document.title);
   if (ACTIVE === tab) ACTIVE = null;
-  const next = TABS[TABS.length - 1];
+  // Další tab jen z prostoru okna — zavřením se okno do jiné firmy nepřepne.
+  const here = STATE && STATE.config ? TABS.filter((t) => tabProstor(t) === prostor()) : TABS;
+  const next = here[here.length - 1];
   if (next) activate(next);
   else { $('welcome').hidden = false; $('clockify').hidden = true; $('actionbar').hidden = true; }
   renderWelcomeOpen();
@@ -3717,13 +4189,9 @@ function newTabMenu(btn) {
   const items = [];
   const a = agentById(STATE.default_agent) || agentList(true)[0];
   if (a && cfg.agent !== false && cfg.claude !== false) {
-    items.push({icon: 'i-terminal', label: newTabLabel(), color: 'var(--accent)',
-                run: () => openTab({kind: 'project', path: STATE.home,
-                                    title: newTabLabel(), agent: a.id})});
-  }
-  if (STATE.firma && STATE.firma.vault) {
-    items.push({icon: 'i-terminal', label: onServer() ? 'Server firemní' : 'Firemní chat', color: 'var(--firma)',
-                run: () => openFirmaTab()});
+    const f = prostorFirma();
+    items.push({icon: 'i-terminal', label: f ? 'Nový chat · ' + f.nazev : newTabLabel(),
+                color: f ? 'var(--firma)' : 'var(--accent)', run: () => newChatHere()});
   }
   if (cfg.shell !== false && STATE.config.dev_mode) {
     items.push({icon: 'i-terminal', label: 'Terminál',
@@ -3756,7 +4224,7 @@ function topbarMenu(btn) {
   // Sdílení chatu: na telefonu není lišta s tlačítkem, tak je to tady.
   if (onServer() && ACTIVE && (ACTIVE.chat || ACTIVE.resume) && ACTIVE.kind !== 'shell') {
     const rel = relaceTabu(ACTIVE);
-    items.push({icon: 'i-user', label: rel ? 'Sdílení chatu (' + rel.clenove.length + ')…' : 'Sdílet chat…',
+    items.push({icon: 'i-user', label: rel ? 'Sdílení chatu (' + (rel.clenove.length + (rel.skupiny || []).length) + ')…' : 'Sdílet chat…',
                 color: 'var(--accent)', run: () => sdiletChat(ACTIVE)});
   }
   items.push(
@@ -3765,7 +4233,7 @@ function topbarMenu(btn) {
   );
   // Poznámky jen v Obsidianu (přepínač osobní / firemní je uvnitř).
   const mem = STATE.memory || {};
-  if (mem.enabled || (STATE.firma && STATE.firma.vault)) {
+  if (mem.enabled || hasFirma()) {
     items.push({icon: 'i-book', label: 'Obsidian',
                 run: () => (window.HubVault ? openVault() : openExternal('', 'brain'))});
   }
@@ -4337,6 +4805,8 @@ async function main() {
   $('btn-new-agent').onclick = (ev) => {
     const ready = agentList(true);
     const def = agentById(STATE.default_agent);
+    // Ve firmě je nový chat chatem firmy (prostor okna, přepínač v hlavičce).
+    if (prostorFirma()) return openFirmaTab();
     if (ready.length > 1 && (ev.altKey || !def || !def.path)) return newAgentMenu(ev);
     const a = (def && def.path) ? def : ready[0];
     if (!a) return HubSettings.open({...hubIO(), state: STATE, tab: 'agenti'});
@@ -4350,7 +4820,12 @@ async function main() {
   $('btn-new-menu').onclick = (ev) => newTabMenu(ev.currentTarget);
   // Poznámky se otevírají v hubu (i s přepínačem firemní / sdílené); aplikace
   // Obsidian na počítači je uvnitř pod „Otevřít v Obsidianu".
-  $('btn-brain').onclick = () => (window.HubVault ? openVault() : openExternal('', 'brain'));
+  $('btn-brain').onclick = () => {
+    if (!window.HubVault) return openExternal('', 'brain');
+    const f = prostorFirma();
+    return f ? openVault('', firmaVaultId(f)) : openVault();
+  };
+  $('btn-prostor').onclick = prostorMenu;
   $('nav-projekty').onclick = () => showProjekty(true);
   $('pp-q').oninput = renderProjekty;
   $('pp-sort').onclick = () => {

@@ -60,6 +60,10 @@ def _vault(which):
         if not core.company_vault():
             raise ToolError("Firemní Obsidian tenhle účet nevidí.")
         return "firma"
+    if re.fullmatch(r"firma:[a-z0-9][a-z0-9-]{0,39}", which):
+        if not core.firma_root(which[6:]):
+            raise ToolError("Do téhle firmy tenhle účet nepatří.")
+        return which
     if re.fullmatch(r"sdilene:[a-z0-9][a-z0-9-]{0,49}", which):
         if which[8:] not in {v["slug"] for v in core.shared_state()}:
             raise ToolError("Do tohohle sdíleného Obsidianu nepatříš.")

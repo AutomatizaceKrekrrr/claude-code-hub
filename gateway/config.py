@@ -95,6 +95,11 @@ COMPANY_LOG = os.path.join(COMPANY_DIR, "nahrano.jsonl")
 # a nikdo je nemá zvlášť u sebe. Zavádí a aktualizuje je claude-hub-admin
 # skills; pokyny k nim dostane Claude v ~/.claude/CLAUDE.md prostoru.
 COMPANY_SKILLS = os.path.join(COMPANY_VAULT, "skills")
+# Další firmy (gateway/firmy.py): každá ve vlastní složce s trezorem `Brain`,
+# registr firem, lidí a přístupů vedle nich. Dnešní firemní trezor zůstává,
+# kde je (COMPANY_DIR) — je to firma `firma`.
+FIRMY_DIR = os.environ.get("HUB_GW_FIRMY_DIR",
+                           os.path.join(os.path.dirname(GATEWAY_DIR), "firmy"))
 # Sdílené Obsidiany pro vybrané lidi (gateway/shared.py): každý ve vlastní složce,
 # registr členů vedle nich.
 SHARED_DIR = os.environ.get("HUB_GW_SHARED_DIR",

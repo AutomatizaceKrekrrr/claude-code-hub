@@ -33,8 +33,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from hub import __version__, qr
 
 from . import webauthn
-from . import (config, isolation, mcp, mcp_sdilene, pocitac, poznamky, pristup, relace, safefs, shared, slozky,
-               totp, workspace)
+from . import (config, firmy, isolation, mcp, mcp_sdilene, pocitac, poznamky, pristup, relace, safefs, shared,
+               slozky, totp, workspace)
 from .accounts import Accounts
 
 HTML = "text/html; charset=utf-8"
@@ -215,7 +215,7 @@ class HubProc:
         self.shared = []
         # Poznámky firemního trezoru, které prostor při startu nedostal
         # (gateway/poznamky.py) — podle toho hub pozná, že chce restart.
-        self.hidden = []
+        self.hidden = {}
         # Žeton, kterým se prostor u brány prokazuje, když Claude sahá na
         # počítač uživatele (gateway/pocitac.py). Nový s každým startem.
         self.pocitac_token = ""
@@ -1057,6 +1057,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._firma_notes(method, user)
             if route == "/gw/firma/soubor":
                 return self._firma_file(method, user, parsed.query)
+            if route == "/gw/firmy":
+                return self._gw_firmy(method, user)
+            if route == "/gw/firma/smazat":
+                return self._firma_delete(method, user)
             # Zabezpečení účtu z Nastavení → Účet (hub v prostoru o heslech nic neví).
             if route == "/gw/account":
                 return self._json({"user": user, "twofa": self.accounts.twofa(user["id"]),
@@ -1259,10 +1263,11 @@ class Handler(BaseHTTPRequestHandler):
         if len(raw) != length:
             return self._json({"error": "Soubor nedorazil celý."}, 400)
         try:
-            if vault == "firma":
-                if self.accounts.company_level(user) == "none":
+            if vault == "firma" or vault.startswith("firma:"):
+                firma = vault[len("firma:"):] if vault.startswith("firma:") else firmy.LEGACY
+                if not firmy.exists(firma) or not firmy.role(user, firma):
                     return self._json({"error": "K firemnímu Obsidianu nemáš přístup."}, 403)
-                result = workspace.upload_company(user, rel, raw, overwrite)
+                result = workspace.upload_company(user, rel, raw, overwrite, firma=firma)
             elif vault.startswith("sdilene:"):
                 result = shared.upload(user, vault[len("sdilene:"):], rel, raw, overwrite)
             else:
@@ -1283,25 +1288,29 @@ class Handler(BaseHTTPRequestHandler):
         GET vrátí každému, jestli je správce poznámek a jestli se od startu
         jeho prostoru přístupy změnily (`zmena` → hub nabídne restart).
         Správci navíc dostanou omezené poznámky a lidi. POST {cesta, emaily}
-        jen správce, jen ze stránky hubu; prázdné `emaily` = vidí všichni."""
-        if self.accounts.company_level(user) == "none":
+        jen správce, jen ze stránky hubu; prázdné `emaily` = vidí všichni.
+        Firma (gateway/firmy.py) v `?firma=` nebo poli `firma`, bez ní dnešní."""
+        form = self._read_form() if method == "POST" else {}
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        firma = str(form.get("firma") or (query.get("firma") or [firmy.LEGACY])[0])
+        if not firmy.exists(firma) or not firmy.role(user, firma):
             return self._json({"error": "K firemnímu Obsidianu nemáš přístup."}, 403)
-        manager = poznamky.is_manager(user)
+        manager = poznamky.is_manager(user, firma)
         if method == "GET":
             proc = self.hubs.procs.get(user["id"]) if self.hubs else None
             # Cizí Lidé/ a Sdílené/ se nepočítají: nový kolega nebo sdílený
             # trezor jiných lidí restart nepotřebuje (Sdílené hlídá svůj panel).
             firm = lambda paths: sorted(p for p in paths if not slozky.special(p))
             changed = bool(proc and proc.alive()
-                           and firm(proc.hidden) != firm(poznamky.hidden_for(user)))
+                           and firm(proc.hidden.get(firma, []))
+                           != firm(poznamky.hidden_for(user, firma=firma)))
             out = {"spravce": manager, "zmena": changed}
             if manager:
-                out.update(poznamky=poznamky.listing(), slozky=poznamky.folders(),
-                           lide=poznamky.people())
+                out.update(poznamky=poznamky.listing(firma), slozky=poznamky.folders(firma),
+                           lide=poznamky.people(firma))
             return self._json(out)
         if method != "POST":
             return self._json({"error": "Jen GET nebo POST."}, 405)
-        form = self._read_form()
         if not self._account_post_ok():
             return self._json({"error": "Přístupy k poznámkám jde měnit jen v hubu."}, 403)
         emails = form.get("emaily") or []
@@ -1310,7 +1319,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             only = form.get("jen")
             result = poznamky.set_note(user, form.get("cesta"), emails,
-                                       None if only is None else bool(only))
+                                       None if only is None else bool(only), firma=firma)
         except PermissionError as exc:
             return self._json({"error": str(exc)}, 403)
         except ValueError as exc:
@@ -1325,6 +1334,100 @@ class Handler(BaseHTTPRequestHandler):
         note = f"{waiting} lidem se to projeví po restartu jejich prostoru" if waiting else ""
         return self._json({"ok": True, "path": result["path"], "jen": result["jen"],
                            "people": result["people"], "note": note})
+
+    def _firma_delete(self, method, user):
+        """Smazání poznámky z trezoru firmy — jen tlačítkem v hubu (stejný původ,
+        cookie brány a X-Hub-Firma, jako Nahrát). Claude v prostoru mazat nemůže."""
+        if method != "POST":
+            return self._json({"error": "Jen POST."}, 405)
+        if not self._same_origin() or self.headers.get("X-Hub-Firma") != "1":
+            return self._json({"error": "Smazat jde jen tlačítkem v aplikaci."}, 403)
+        form = self._read_form()
+        try:
+            result = workspace.delete_company(user, form.get("cesta"), str(form.get("firma") or firmy.LEGACY))
+        except ValueError as exc:
+            return self._json({"error": str(exc)}, 400)
+        except OSError as exc:
+            _errlog("smazání ve firmě", exc)
+            return self._json({"error": MSG_SAVE}, 500)
+        return self._json(result)
+
+    # ---- firmy (gateway/firmy.py) ----
+    def _gw_firmy(self, method, user):
+        """Nastavení → Firmy: firmy člověka, a kapitánům lidé, klienti,
+        podkategorie a kdo kam vidí. Změny jen ze stránky hubu; kdo co smí,
+        rozhoduje firmy.py. Kdo přístup ztratil a zrovna nepracuje, tomu se
+        prostor zastaví hned, ostatním se změna projeví po restartu."""
+        if method == "GET":
+            mine = firmy.firmy_for(user)
+            proc = self.hubs.procs.get(user["id"]) if self.hubs else None
+            changed = False
+            if proc and proc.alive():
+                now = {f["zkratka"]: sorted(p for p in poznamky.hidden_for(user, firma=f["zkratka"])
+                                            if not slozky.special(p)) for f in mine}
+                was = {k: sorted(p for p in v if not slozky.special(p))
+                       for k, v in proc.hidden.items()}
+                changed = now != was
+            captain = [f["zkratka"] for f in mine if f["role"] == "kapitan"]
+            out = {"firmy": mine, "zakladat": firmy.muze_zakladat(user), "zmena": changed,
+                   "prehled": {slug: firmy.prehled(user, slug) for slug in captain}}
+            if captain:
+                out["ucty"] = [{"id": r["id"], "email": r["email"], "name": r["name"] or ""}
+                               for r in self.accounts.list() if not r["disabled"]]
+            return self._json(out)
+        if method != "POST":
+            return self._json({"error": "Jen GET nebo POST."}, 405)
+        form = self._read_form()
+        if not self._account_post_ok():
+            return self._json({"error": "Firmy jde měnit jen v hubu."}, 403)
+        action = str(form.get("akce") or "")
+        slug = str(form.get("firma") or "")
+        try:
+            if action == "zalozit":
+                result = firmy.zalozit(user, form.get("nazev"),
+                                       druh_firmy=str(form.get("druh") or "klienti"))
+            elif action == "smazat-firmu":
+                result = firmy.smazat_firmu(user, slug)
+            elif action == "druh":
+                result = firmy.nastavit_druh(user, slug, str(form.get("druh") or ""))
+            elif action == "nazev":
+                result = firmy.prejmenovat_firmu(user, slug, form.get("nazev"))
+            elif action == "klienti":
+                result = firmy.nastavit_klienty(user, slug, bool(form.get("zapnout")))
+            elif action == "clovek":
+                result = firmy.nastavit_cloveka(user, slug, form.get("id"),
+                                                str(form.get("role") or ""), bool(form.get("mazat")))
+            elif action == "mazani":
+                result = firmy.nastavit_mazani(user, slug, form.get("id"), bool(form.get("ano")))
+            elif action == "pozvat":
+                from . import tym
+                result = tym.pozvat_do_firmy(self.accounts, user, slug, form)
+            elif action == "slozka":
+                result = firmy.zalozit_slozku(user, slug, form.get("klient"),
+                                              form.get("podkategorie") or "")
+            elif action == "pristup":
+                result = firmy.nastavit_pristup(user, slug, form.get("cesta"), form.get("id"),
+                                                bool(form.get("ano")))
+            elif action == "prejmenovat":
+                result = firmy.prejmenovat_slozku(user, slug, form.get("cesta"), form.get("nazev"))
+            elif action == "smazat":
+                result = firmy.smazat_slozku(user, slug, form.get("cesta"))
+            else:
+                return self._json({"error": "Neznámá akce."}, 400)
+        except PermissionError as exc:
+            return self._json({"error": str(exc)}, 403)
+        except (ValueError, TypeError) as exc:
+            return self._json({"error": str(exc)}, 400)
+        except OSError as exc:
+            _errlog("firmy " + action, exc)
+            return self._json({"error": MSG_SAVE}, 500)
+        stopped = 0
+        if self.hubs:
+            for uid in result.get("revoked") or []:
+                if uid != user["id"]:
+                    stopped += bool(self.hubs.stop_idle(uid))
+        result = {k: v for k, v in result.items() if k not in ("affected", "revoked")}
+        return self._json(result)
 
     # ---- přihlášení ----
     def _wants_json(self):
@@ -1772,6 +1875,8 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
             if method != "POST":
                 data = relace.seznam(user)
                 data["lide"] = [p for p in shared.people() if p["email"] != user["email"]]
+                # Podkategorie firem, kam chat jde sdílet nebo uložit (gateway/firmy.py).
+                data["skupiny"] = firmy.skupiny_pro(user)
                 return self._json(data)
             if not self._account_post_ok():
                 return self._json({"error": "Tohle jde jen v hubu."}, 403)
@@ -1780,7 +1885,13 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
             try:
                 if akce == "zalozit":
                     result = relace.zalozit(user, form.get("chat"), form.get("titulek"),
-                                            form.get("emaily") or [], form.get("psat") or [])
+                                            form.get("emaily") or [], form.get("psat") or [],
+                                            form.get("skupiny") or [], form.get("skupiny_psat") or [])
+                elif akce == "ulozit":
+                    result = relace.ulozit(user, form.get("chat"), form.get("titulek"),
+                                           form.get("skupiny") or [])
+                elif akce == "smazat-ulozeny":
+                    result = relace.smazat_ulozeny(user, str(form.get("id") or ""))
                 elif akce == "zrusit":
                     result = relace.zrusit(user, str(form.get("id") or ""))
                 elif akce == "odejit":
@@ -1905,19 +2016,33 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         if method != "POST" or not self._account_post_ok():
             return self._json({"error": "Tohle jde jen z hubu."}, 403)
         form = self._read_form()
-        try:
-            entry, _role = relace.ziskat(user, str(form.get("id") or ""))
-        except ValueError as exc:
-            return self._json({"error": str(exc)}, 403)
-        owner = shared.ACCOUNTS.by_id(entry.get("owner")) if shared.ACCOUNTS else None
-        if not owner or not relace.prepis_offline(owner, entry.get("chat")):
-            return self._json({"error": "Chat už u majitele není, nemám co zkopírovat."}, 404)
-        try:
-            data, meta = prenos.zabal(os.path.join(workspace.home_for(owner), ".claude"),
-                                      entry["chat"], entry.get("titulek") or "Chat",
-                                      odkud=relace.jmeno(owner))
-        except ValueError as exc:
-            return self._json({"error": str(exc)}, 400)
+        if form.get("ulozeny"):
+            # Chat uložený do podkategorie firmy: zip leží ve složce firmy.
+            try:
+                info, path = relace.ulozeny(user, form.get("ulozeny"))
+                with open(path, "rb") as fh:
+                    data = fh.read()
+                meta = {"id": info["chat"]}
+            except (ValueError, OSError) as exc:
+                return self._json({"error": str(exc) if isinstance(exc, ValueError)
+                                   else "Uložený chat se nepodařilo přečíst."}, 403)
+            owner = shared.ACCOUNTS.by_id(info.get("owner")) if shared.ACCOUNTS else None
+            entry = {"titulek": info.get("titulek") or "Chat"}
+            owner = owner or {"name": "kolega"}
+        else:
+            try:
+                entry, _role = relace.ziskat(user, str(form.get("id") or ""))
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, 403)
+            owner = shared.ACCOUNTS.by_id(entry.get("owner")) if shared.ACCOUNTS else None
+            if not owner or not relace.prepis_offline(owner, entry.get("chat")):
+                return self._json({"error": "Chat už u majitele není, nemám co zkopírovat."}, 404)
+            try:
+                data, meta = prenos.zabal(os.path.join(workspace.home_for(owner), ".claude"),
+                                          entry["chat"], entry.get("titulek") or "Chat",
+                                          odkud=relace.jmeno(owner))
+            except ValueError as exc:
+                return self._json({"error": str(exc)}, 400)
         parts = prenos.kusy(data)
         try:
             for i, chunk in enumerate(parts, 1):
@@ -1928,7 +2053,7 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
                     "title": ("Kopie: " + (entry.get("titulek") or "Chat"))[:120]}, timeout=180)
         except mcp.ToolError as exc:
             return self._json({"error": str(exc)}, 502)
-        relace._log(user, "pokracovat", str(form.get("id") or ""))
+        relace._log(user, "pokracovat", str(form.get("id") or form.get("ulozeny") or ""))
         return self._json({"ok": True, "chat": meta["id"], "hotovo": bool((result or {}).get("hotovo"))})
 
     def _gw_shared_change(self, user):
@@ -2498,7 +2623,9 @@ chce být přihlášená jako <b>{html.escape(user["email"])}</b>.</p>
         nevidí. Změny jen ze stránky hubu (stejný původ + X-Hub-Account)."""
         if method == "GET":
             return self._json({"napojeni": mcp_sdilene.for_user(user),
-                               "people": shared.people()})
+                               "people": shared.people(),
+                               # Podkategorie firem, kam smí sdílet (gateway/firmy.py).
+                               "skupiny": firmy.skupiny_pro(user)})
         if method != "POST":
             return self._json({"error": "Jen GET nebo POST."}, 405)
         form = self._read_form()

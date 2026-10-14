@@ -32,6 +32,8 @@
     ['agenti',     'AI agenti', 'i-hub',      () => agenti()],
     ['pamet',      'Paměť',     'i-book',     () => pamet(), 'dev'],
     ['ucet',       'Účet',      'i-user',     () => ucet()],
+    // Firmy, lidé a přístupy ke klientům (gateway/firmy.py) — jen na bráně.
+    ['firmy',      'Firmy',     'i-folder',   () => firmy(), 'server'],
     ['hlas',       'Hlas',      'i-mic',      () => hlas()],
     // Všechno, čím se Claude rozšiřuje — služby, pluginy, skilly, MCP, pluginy appky.
     ['rozsireni',  'Napojení a pluginy', 'i-hub', () => rozsireni()],
@@ -110,7 +112,8 @@
     const dev = advanced();
     const u = (state && state.config && state.config.gateway_user) || null;
     const admin = !!(u && u.role === 'admin');
-    return SECTIONS.filter(([, , , , flag]) => (flag !== 'dev' || dev) && (flag !== 'admin' || admin));
+    return SECTIONS.filter(([, , , , flag]) => (flag !== 'dev' || dev) && (flag !== 'admin' || admin)
+                                              && (flag !== 'server' || !!u));
   }
 
   // Pro pokročilé (config.dev_mode) — jinak jednoduchý režim bez techniky.
@@ -140,6 +143,330 @@
     panel.textContent = '';
     const build = (shown.find(([id]) => id === active) || shown[0])[3];
     panel.appendChild(build());
+  }
+
+  /* Firmy (gateway/firmy.py): kde jsem a s jakou rolí, založení firmy a pro
+     kapitány lidé, klienti, podkategorie a kdo kam vidí. Rozhoduje brána —
+     tady se jen kreslí a posílá; změny se v prostorech projeví po restartu. */
+  function firmy() {
+    const box = section('Firmy',
+      'Každá firma má vlastní Obsidian, skilly a lidi. Obecné věci firmy vidí každý její člen; ' +
+      'klienty a jejich podkategorie (Web, Marketing…) jen ti, komu je kapitán zpřístupní.');
+    box.classList.add('firmy-sec');
+    const body = el('div');
+    box.appendChild(body);
+    const ROLE = {kapitan: 'kapitán', clen: 'člen', host: 'host'};
+    const gw = async (payload) => {
+      const r = await fetch('/gw/firmy', payload === undefined ? {credentials: 'same-origin'} : {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json', 'X-Hub-Account': '1'},
+        body: JSON.stringify(payload),
+      });
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(data.error || 'Server teď neodpovídá, zkus to za chvíli.');
+      return data;
+    };
+    const run = async (payload, done) => {
+      try {
+        const out = await gw(payload);
+        if (done) io.toast(out.message || done);
+        await kresli();
+        return out;
+      } catch (e) { io.toast(e.message); return null; }
+    };
+    const input = (placeholder, type) => {
+      const i = el('input', 'set-input');
+      i.placeholder = placeholder;
+      if (type) i.type = type;
+      return i;
+    };
+    const select = (options, value) => {
+      const sel = el('select', 'set-input');
+      for (const [v, label] of options) {
+        const o = el('option', null, label);
+        o.value = v;
+        o.selected = v === value;
+        sel.appendChild(o);
+      }
+      return sel;
+    };
+    const roleOptions = [['kapitan', 'kapitán'], ['clen', 'člen'], ['host', 'host (jen čte)']];
+    const DRUHY = [['klienti', 'pracuje pro klienty (Klienti › klient › podkategorie)'],
+                   ['projekty', 'pracuje pro sebe (rovnou projekty)']];
+
+    async function kresli() {
+      let d;
+      try { d = await gw(); } catch (e) { body.textContent = e.message; return; }
+      body.textContent = '';
+      if (d.zmena) {
+        const row = el('div', 'set-row firmy-zmena');
+        row.appendChild(el('span', 'set-warn', 'Přístupy se změnily — v prostoru se projeví po restartu.'));
+        const b = el('button', 'btn primary', 'Restartovat prostor');
+        b.onclick = () => (typeof global.restartSpace === 'function'
+          ? global.restartSpace('Načítám změněné firmy a přístupy…') : io.reload());
+        row.appendChild(b);
+        body.appendChild(row);
+      }
+      // Moje firmy.
+      if (!d.firmy.length) body.appendChild(el('div', 'set-note', 'Zatím nejsi v žádné firmě.'));
+      for (const f of d.firmy) {
+        const row = el('div', 'set-row');
+        row.appendChild(el('span', null, f.nazev));
+        row.appendChild(el('small', null, ROLE[f.role] + (f.role === 'clen' && f.mazat ? ' · smí mazat' : '')));
+        body.appendChild(row);
+      }
+      if (d.zakladat) {
+        // Druh firmy (gateway/firmy.py DRUHY): agentura má klienty a pod nimi
+        // podkategorie, firma pro sebe rovnou projekty.
+        const row = el('div', 'set-row');
+        const name = input('Název nové firmy');
+        const druh = select(DRUHY, 'klienti');
+        druh.classList.add('firmy-druh');
+        const b = el('button', 'btn primary', 'Založit firmu');
+        b.onclick = () => name.value.trim()
+          ? run({akce: 'zalozit', nazev: name.value.trim(), druh: druh.value}, 'Firma je založená.')
+          : io.toast('Vyplň název firmy.');
+        row.append(name, druh, b);
+        body.appendChild(row);
+      }
+      for (const [slug, p] of Object.entries(d.prehled || {})) {
+        body.appendChild(kapitan(slug, p, d.ucty || []));
+      }
+    }
+
+    // Správa jedné firmy pro jejího kapitána.
+    function kapitan(slug, p, ucty) {
+      const sec = el('div', 'firmy-firma');
+      sec.appendChild(el('div', 'set-title', p.nazev + ' — správa'));
+      // Název firmy.
+      const nr = el('div', 'set-row');
+      const nazev = input('Název firmy');
+      nazev.value = p.nazev;
+      const nb = el('button', 'btn ghost', 'Přejmenovat');
+      nb.onclick = () => run({akce: 'nazev', firma: slug, nazev: nazev.value.trim()}, 'Přejmenováno.');
+      nr.append(nazev, nb);
+      sec.appendChild(nr);
+      // Druh firmy jde změnit, jen dokud v ní nejsou klienti / projekty (brána).
+      const dr = el('div', 'set-row');
+      const druh = select(DRUHY, p.druh || 'klienti');
+      druh.classList.add('firmy-druh');
+      druh.disabled = Object.keys(p.klienti || {}).length > 0;
+      druh.title = druh.disabled ? 'Druh jde změnit, jen dokud je firma bez klientů a projektů.' : '';
+      druh.onchange = () => run({akce: 'druh', firma: slug, druh: druh.value}, 'Druh firmy změněn.');
+      dr.append(el('span', null, 'Firma'), druh);
+      sec.appendChild(dr);
+      if (slug === 'firma') {
+        const kr = el('label', 'set-row');
+        const cb = el('input');
+        cb.type = 'checkbox';
+        cb.checked = !!p.klienti_zapnute;
+        cb.onchange = () => run({akce: 'klienti', firma: slug, zapnout: cb.checked}, 'Uloženo.');
+        kr.append(cb, el('span', null, 'Klienti a podkategorie s přístupy (složka Klienti/ je pak vidět jen s přístupem)'));
+        sec.appendChild(kr);
+      }
+
+      // Lidé a role.
+      sec.appendChild(el('div', 'set-title firmy-sub', 'Lidé'));
+      const members = new Set(p.lide.map((m) => m.id));
+      for (const m of p.lide) {
+        const row = el('div', 'set-row');
+        row.appendChild(el('span', null, (m.name || m.email) + (m.name ? ' · ' + m.email : '')));
+        const sel = select([...roleOptions, ['', 'odebrat z firmy']], m.role);
+        sel.onchange = () => run({akce: 'clovek', firma: slug, id: m.id, role: sel.value,
+                                  mazat: m.mazat}, sel.value ? 'Role změněna.' : 'Odebráno z firmy.');
+        row.appendChild(sel);
+        if (m.role === 'clen') {
+          const lab = el('label', 'firmy-mazat');
+          const cb = el('input');
+          cb.type = 'checkbox';
+          cb.checked = !!m.mazat;
+          cb.onchange = () => run({akce: 'mazani', firma: slug, id: m.id, ano: cb.checked}, 'Uloženo.');
+          lab.append(cb, el('span', null, 'smí mazat'));
+          row.appendChild(lab);
+        }
+        sec.appendChild(row);
+      }
+      const others = ucty.filter((u) => !members.has(u.id));
+      if (others.length) {
+        const row = el('div', 'set-row');
+        const who = select(others.map((u) => [String(u.id), (u.name || u.email) + (u.name ? ' · ' + u.email : '')]));
+        const role = select(roleOptions, 'clen');
+        const b = el('button', 'btn primary', 'Přidat do firmy');
+        b.onclick = () => run({akce: 'clovek', firma: slug, id: Number(who.value), role: role.value},
+                              'Přidáno do firmy.');
+        row.append(who, role, b);
+        sec.appendChild(row);
+      }
+      // Pozvat někoho, kdo na serveru účet ještě nemá.
+      const pr = el('div', 'set-row');
+      const email = input('e-mail nového člověka', 'email');
+      const jmeno = input('jméno a příjmení');
+      const prole = select(roleOptions, 'clen');
+      const pb = el('button', 'btn ghost', 'Pozvat');
+      const heslo = el('div', 'set-note');
+      pb.onclick = async () => {
+        if (!email.value.trim()) return io.toast('Vyplň e-mail.');
+        const out = await run({akce: 'pozvat', firma: slug, email: email.value.trim(),
+                               jmeno: jmeno.value.trim(), role: prole.value});
+        if (out && out.heslo) {
+          heslo.textContent = `Účet ${out.email} je založený. Heslo (ukáže se jen teď, předej ho): ${out.heslo}` +
+            ' — při prvním přihlášení si nastaví ověření v telefonu.';
+          sec.appendChild(heslo);
+        }
+      };
+      pr.append(email, jmeno, prole, pb);
+      sec.appendChild(pr);
+
+      // Klienti, podkategorie a kdo kam vidí.
+      if (p.klienti_zapnute) sec.appendChild(klienti(slug, p));
+      // Smazat firmu (dnešní firemní Obsidian ne): odloží se na serveru stranou.
+      if (slug !== 'firma') {
+        const dr = el('div', 'set-row firmy-smazat');
+        const del = el('button', 'btn ghost', 'Smazat firmu');
+        del.title = 'Firma zmizí všem jejím lidem; na serveru se odloží stranou a správce ji umí vrátit.';
+        del.onclick = () => { if (confirmTwice(del)) run({akce: 'smazat-firmu', firma: slug}, 'Firma je smazaná.'); };
+        dr.appendChild(del);
+        sec.appendChild(dr);
+      }
+      return sec;
+    }
+
+    function klienti(slug, p) {
+      if (p.druh === 'projekty') return projekty(slug, p);
+      const wrap = el('div');
+      wrap.appendChild(el('div', 'set-title firmy-sub', 'Klienti a kdo kam vidí'));
+      wrap.appendChild(el('div', 'set-note',
+        'Zaškrtni, kdo vidí klienta (jeho obecné věci) a kdo jednotlivé podkategorie. ' +
+        'Podkategorie zpřístupní i klienta. Kapitáni vidí všechno vždycky.'));
+      const lidi = p.lide.filter((m) => m.role !== 'kapitan');
+      const pristup = (rel, id) => (p.pristupy[rel] || []).includes(id);
+      for (const [klient, podkategorie] of Object.entries(p.klienti)) {
+        const kRel = 'Klienti/' + klient;
+        const k = el('div', 'firmy-klient');
+        const head = el('div', 'set-row');
+        head.appendChild(el('strong', null, klient));
+        const nova = input('nová podkategorie (Web, Marketing…)');
+        const nb = el('button', 'btn ghost', 'Přidat');
+        nb.onclick = () => nova.value.trim()
+          ? run({akce: 'slozka', firma: slug, klient, podkategorie: nova.value.trim()}, 'Podkategorie je založená.')
+          : io.toast('Vyplň název podkategorie.');
+        const ren = el('button', 'btn ghost', 'Přejmenovat');
+        // Bez dialogů prohlížeče: nový název se píše do pole vedle.
+        ren.title = 'Nový název klienta napiš do pole vedle';
+        ren.onclick = () => (nova.value.trim()
+          ? run({akce: 'prejmenovat', firma: slug, cesta: kRel, nazev: nova.value.trim()}, 'Přejmenováno.')
+          : io.toast('Nový název napiš do pole vedle a klikni znovu.'));
+        const del = el('button', 'btn ghost', 'Odložit');
+        del.title = 'Složka klienta se odloží mimo Obsidian firmy (jde vrátit ze serveru).';
+        del.onclick = () => { if (confirmTwice(del)) run({akce: 'smazat', firma: slug, cesta: kRel}, 'Klient je odložený.'); };
+        head.append(nova, nb, ren, del);
+        k.appendChild(head);
+        if (lidi.length) {
+          const table = el('table', 'firmy-tabulka');
+          const tr = el('tr');
+          tr.appendChild(el('th', null, ''));
+          tr.appendChild(el('th', null, 'klient'));
+          for (const pk of podkategorie) tr.appendChild(el('th', null, pk));
+          table.appendChild(tr);
+          for (const m of lidi) {
+            const row = el('tr');
+            row.appendChild(el('td', null, m.name || m.email));
+            for (const rel of [kRel, ...podkategorie.map((pk) => kRel + '/' + pk)]) {
+              const td = el('td');
+              const cb = el('input');
+              cb.type = 'checkbox';
+              cb.checked = pristup(rel, m.id);
+              cb.onchange = () => run({akce: 'pristup', firma: slug, cesta: rel, id: m.id, ano: cb.checked});
+              td.appendChild(cb);
+              row.appendChild(td);
+            }
+            table.appendChild(row);
+          }
+          k.appendChild(table);
+        }
+        wrap.appendChild(k);
+      }
+      const add = el('div', 'set-row');
+      const name = input('nový klient');
+      const b = el('button', 'btn primary', 'Přidat klienta');
+      b.onclick = () => name.value.trim()
+        ? run({akce: 'slozka', firma: slug, klient: name.value.trim()}, 'Klient je založený.')
+        : io.toast('Vyplň název klienta.');
+      add.append(name, b);
+      wrap.appendChild(add);
+      return wrap;
+    }
+
+    /* Firma pro sebe: projekty v jedné tabulce (lidé × projekty), u každého
+       projektu přejmenovat / odložit. Kapitáni vidí všechno vždycky. */
+    function projekty(slug, p) {
+      const wrap = el('div');
+      wrap.appendChild(el('div', 'set-title firmy-sub', 'Projekty a kdo kam vidí'));
+      wrap.appendChild(el('div', 'set-note',
+        'Zaškrtni, kdo vidí který projekt. Kapitáni vidí všechno vždycky.'));
+      const lidi = p.lide.filter((m) => m.role !== 'kapitan');
+      const names = Object.keys(p.klienti || {});
+      for (const name of names) {
+        const rel = 'Projekty/' + name;
+        const row = el('div', 'set-row');
+        row.appendChild(el('strong', null, name));
+        const nove = input('nový název');
+        const ren = el('button', 'btn ghost', 'Přejmenovat');
+        ren.onclick = () => (nove.value.trim()
+          ? run({akce: 'prejmenovat', firma: slug, cesta: rel, nazev: nove.value.trim()}, 'Přejmenováno.')
+          : io.toast('Nový název napiš do pole vedle a klikni znovu.'));
+        const del = el('button', 'btn ghost', 'Odložit');
+        del.title = 'Složka projektu se odloží mimo Obsidian firmy (jde vrátit ze serveru).';
+        del.onclick = () => { if (confirmTwice(del)) run({akce: 'smazat', firma: slug, cesta: rel}, 'Projekt je odložený.'); };
+        row.append(nove, ren, del);
+        wrap.appendChild(row);
+      }
+      if (names.length && lidi.length) {
+        const table = el('table', 'firmy-tabulka');
+        const tr = el('tr');
+        tr.appendChild(el('th', null, ''));
+        for (const name of names) tr.appendChild(el('th', null, name));
+        table.appendChild(tr);
+        for (const m of lidi) {
+          const row = el('tr');
+          row.appendChild(el('td', null, m.name || m.email));
+          for (const name of names) {
+            const rel = 'Projekty/' + name;
+            const td = el('td');
+            const cb = el('input');
+            cb.type = 'checkbox';
+            cb.checked = (p.pristupy[rel] || []).includes(m.id);
+            cb.onchange = () => run({akce: 'pristup', firma: slug, cesta: rel, id: m.id, ano: cb.checked});
+            td.appendChild(cb);
+            row.appendChild(td);
+          }
+          table.appendChild(row);
+        }
+        wrap.appendChild(table);
+      }
+      const add = el('div', 'set-row');
+      const name = input('nový projekt (Web, Sociální sítě…)');
+      const b = el('button', 'btn primary', 'Přidat projekt');
+      b.onclick = () => name.value.trim()
+        ? run({akce: 'slozka', firma: slug, klient: name.value.trim()}, 'Projekt je založený.')
+        : io.toast('Vyplň název projektu.');
+      add.append(name, b);
+      wrap.appendChild(add);
+      return wrap;
+    }
+
+    // Mazání bez dialogu prohlížeče: první klik se zeptá, druhý provede.
+    function confirmTwice(btn) {
+      if (btn.dataset.sure) return true;
+      btn.dataset.sure = '1';
+      const was = btn.textContent;
+      btn.textContent = 'Opravdu?';
+      setTimeout(() => { delete btn.dataset.sure; btn.textContent = was; }, 4000);
+      return false;
+    }
+
+    kresli();
+    return box;
   }
 
   function vzhled() {
@@ -1230,6 +1557,22 @@
     return box;
   }
 
+  /* Podkategorie firem jako příjemce sdílení: [{id, nazev}] → zaškrtávátka. */
+  function groupChecks(groups, chosen) {
+    const box = el('div', 'svc-people');
+    for (const g of groups) {
+      const row = el('label', 'svc-person');
+      const cb = el('input');
+      cb.type = 'checkbox';
+      cb.value = g.id;
+      cb.checked = chosen.has(g.id);
+      row.append(cb, el('span', null, g.nazev));
+      box.appendChild(row);
+    }
+    box.value = () => [...box.querySelectorAll('input:checked')].map((c) => c.value);
+    return box;
+  }
+
   /* Ikonka služby, ať ji člověk pozná na první pohled (hub/static/sluzby/,
      oficiální ikony z webů služeb — nic se nenačítá zvenku). */
   const SVC_ICONS = ['freelo', 'canva', 'ecomail', 'clockify', 'google', 'wordpress',
@@ -1371,20 +1714,21 @@
       col.appendChild(el('small', null, [acc.status, acc.detail].filter(Boolean).join(' · ')));
       const mine = sharedItems(svc.id).find((n) => n.is_owner && n.account === acc.name);
       const members = (mine && mine.members) || [];
-      if (members.length) {
+      const skupiny = (mine && mine.skupiny) || [];
+      if (members.length || skupiny.length) {
         col.appendChild(el('small', 'svc-sharing',
-          'vidí i: ' + members.map((m) => m.name || m.email).join(', ')));
+          'vidí i: ' + [...members.map((m) => m.name || m.email), ...skupiny.map((g) => g.nazev)].join(', ')));
       }
       row.appendChild(col);
       row.appendChild(el('span', 'spacer'));
       const slot = el('div', 'svc-slot');
       if (onServer && shared) {
-        const share = el('button', 'btn ghost', members.length ? 'Sdíleno' : 'Sdílet');
+        const share = el('button', 'btn ghost', members.length || skupiny.length ? 'Sdíleno' : 'Sdílet');
         share.title = 'Vyber, kdo další může tenhle účet používat';
         share.onclick = () => {
           if (slot.querySelector('.svc-share')) { slot.textContent = ''; return; }
           slot.textContent = '';
-          slot.appendChild(shareForm(svc, acc, members, slot));
+          slot.appendChild(shareForm(svc, acc, members, slot, skupiny));
         };
         row.appendChild(share);
       }
@@ -1433,7 +1777,7 @@
 
     /* Kdo další účet uvidí. Klíče ani přihlášení se nikam nekopírují — brána
        je čte z tvého prostoru, ostatní dostanou jen most (sdilene-…). */
-    function shareForm(svc, acc, members, slot) {
+    function shareForm(svc, acc, members, slot, skupiny = []) {
       const f = el('div', 'svc-form svc-share');
       f.appendChild(el('div', 'set-note', 'Kdo další může účet ' + acc.label +
         ' používat? Budou pracovat pod tvým přihlášením' +
@@ -1441,20 +1785,29 @@
         ' Přihlašovací údaje neuvidí nikdo z nich.'));
       const picker = peopleChecks((shared && shared.people) || [],
                                   new Set(members.map((m) => m.email)));
+      // Podkategorie firem (gateway/firmy.py): účet dostane každý, kdo do
+      // podkategorie vidí — i ten, kdo k ní přibude později.
+      const moznosti = (shared && shared.skupiny) || [];
+      const groups = groupChecks(moznosti, new Set(skupiny.map((g) => g.id)));
       const save = el('button', 'btn primary', 'Uložit');
       const cancel = el('button', 'btn ghost', 'Zrušit');
       const btns = el('div', 'svc-acc');
       btns.append(save, cancel);
-      f.append(picker, btns);
+      f.append(picker);
+      if (moznosti.length) {
+        f.append(el('div', 'set-note', 'Nebo podkategoriím firem — účet pak dostane každý, kdo do nich vidí:'), groups);
+      }
+      f.append(btns);
       cancel.onclick = () => { slot.textContent = ''; };
       save.onclick = async () => {
         save.disabled = true;
         const emaily = picker.value();
+        const vybrane = groups.value();
         try {
           await gwShared({akce: 'sdilet-ucet', service: svc.id, account: acc.name,
-                          label: acc.label, emaily});
-          io.toast(emaily.length ? 'Účet ' + acc.label + ' teď vidí i vybraní lidé.'
-                                 : 'Účet ' + acc.label + ' už s nikým nesdílíš.');
+                          label: acc.label, emaily, skupiny: vybrane});
+          io.toast(emaily.length || vybrane.length ? 'Účet ' + acc.label + ' teď vidí i vybraní lidé.'
+                                                   : 'Účet ' + acc.label + ' už s nikým nesdílíš.');
           load(false);
         } catch (err) {
           io.toast('Nepovedlo se: ' + err.message);

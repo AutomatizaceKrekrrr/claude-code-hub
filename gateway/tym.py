@@ -16,7 +16,7 @@ import os
 import secrets
 import time
 
-from . import config, poznamky, pristup, workspace
+from . import config, firmy, poznamky, pristup, workspace
 
 LOG = os.path.join(config.GATEWAY_DIR, "tym.jsonl")
 
@@ -61,10 +61,49 @@ def people(accounts, hubs=None):
             "overeni": bool(r["twofa"]),
             "firma": accounts.company_level(dict(r)) if not r["disabled"] else "none",
             "spravce": r["id"] in managers,
+            "zakladatel": firmy.muze_zakladat(dict(r)),
             "zamceny": r["email"] in locked,
             "pracuje": running,
         })
     return out
+
+
+def _novy_ucet(accounts, form, role="user", company=None):
+    """Založí účet s heslem, které vymyslí brána. Vrací (e-mail, heslo).
+    `company` = úroveň v dnešní firmě (none/read/write), když nemá platit
+    výchozí — člověk pozvaný do jiné firmy do dnešní automaticky nepatří."""
+    email = str(form.get("email") or "").strip().lower()
+    name = " ".join(str(form.get("jmeno") or "").split())[:80]
+    password = new_password()
+    # Jak se v prostoru přihlašuje Claude: stejně jako většina týmu.
+    auths = [r.get("claude_auth") or "central" for r in accounts.list()]
+    auth = max(set(auths), key=auths.count) if auths else "central"
+    accounts.add(email, password, name=name, role=role, claude_auth=auth)
+    user = accounts.get(email)
+    if company:
+        accounts.set_company_level({"role": "admin", "email": "brána"}, user["id"], company)
+    try:
+        workspace.migrate_home(user)
+        workspace.ensure(user)
+    except OSError:
+        pass                         # domov se založí při prvním přihlášení
+    return email, password
+
+
+def pozvat_do_firmy(accounts, captain, slug, form):
+    """Kapitán pozve nového člověka rovnou do své firmy (Nastavení → Firmy).
+    Účet dostane roli `user`; do dnešní firmy patří, jen když se zve do ní."""
+    if not firmy.exists(slug) or firmy.role(captain, slug) != "kapitan":
+        raise PermissionError("Zvát do firmy může jen její kapitán.")
+    new_role = str(form.get("role") or "clen")
+    if new_role not in firmy.ROLES:
+        raise ValueError("Neznámá role.")
+    email, password = _novy_ucet(accounts, form,
+                                 company=None if slug == firmy.LEGACY else "none")
+    user = accounts.get(email)
+    firmy.nastavit_cloveka(captain, slug, user["id"], new_role, bool(form.get("mazat")))
+    _log(captain, email, "pozvat-do-firmy", firma=slug, role=new_role)
+    return {"ok": True, "email": email, "heslo": password}
 
 
 def _target(accounts, form):
@@ -82,20 +121,8 @@ def act(accounts, admin, form, hubs=None):
     """Provede jednu akci z Nastavení → Tým. Vrací odpověď pro stránku."""
     action = str(form.get("akce") or "")
     if action == "pozvat":
-        email = str(form.get("email") or "").strip().lower()
-        name = " ".join(str(form.get("jmeno") or "").split())[:80]
         role = "admin" if form.get("role") == "admin" else "user"
-        password = new_password()
-        # Jak se v prostoru přihlašuje Claude: stejně jako většina týmu.
-        auths = [r.get("claude_auth") or "central" for r in accounts.list()]
-        auth = max(set(auths), key=auths.count) if auths else "central"
-        accounts.add(email, password, name=name, role=role, claude_auth=auth)
-        user = accounts.get(email)
-        try:
-            workspace.migrate_home(user)
-            workspace.ensure(user)
-        except OSError:
-            pass                         # domov se založí při prvním přihlášení
+        email, password = _novy_ucet(accounts, form, role)
         _log(admin, email, "pozvat", role=role)
         return {"ok": True, "email": email, "heslo": password}
 
@@ -135,6 +162,10 @@ def act(accounts, admin, form, hubs=None):
     if action == "odemknout":
         accounts.fail_unlock(email)
         _log(admin, email, "odemknout")
+        return {"ok": True}
+    if action == "zakladatel":
+        firmy.nastavit_zakladatele(admin, row["id"], bool(form.get("zapnout")))
+        _log(admin, email, "zakladatel-firem", zapnuto=bool(form.get("zapnout")))
         return {"ok": True}
     if action == "spravce":
         ids = set(poznamky.managers())

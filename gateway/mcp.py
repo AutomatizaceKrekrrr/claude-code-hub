@@ -43,7 +43,7 @@ import urllib.parse
 
 from hub import __version__
 
-from . import config, shared, workspace
+from . import config, firmy, shared, workspace
 
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 MAX_BODY = 4 * 1024 * 1024
@@ -481,7 +481,8 @@ def _s(desc, **props):
 
 OBSIDIAN = {"type": "string",
             "description": "Který Obsidian: 'osobni' (výchozí), 'firma' (firemní), "
-                           "nebo 'sdilene:<zkratka>' (viz nástroj prostor)."}
+                           "'firma:<zkratka>' (další firma) nebo 'sdilene:<zkratka>' "
+                           "(viz nástroj prostor)."}
 TOOLS = [
     {"name": "prostor", "title": "Můj prostor",
      "description": "Kdo jsem, jaké mám právo k firemnímu Obsidianu, do kterých "
@@ -604,11 +605,19 @@ def _check_vault(h, user, which, write=False):
         if write and level != "write":
             raise ToolError("Firemní Obsidian máš jen ke čtení — požádej admina o zápis.")
         return
+    if which.startswith("firma:"):
+        role = firmy.role(user, which[6:]) if firmy.exists(which[6:]) else ""
+        if not role:
+            raise ToolError("Do téhle firmy nepatříš.")
+        if write and role == "host":
+            raise ToolError("Ve firmě jsi host — jen čteš. O zápis požádej kapitána.")
+        return
     if which.startswith("sdilene:"):
         if which[8:] not in {v["slug"] for v in shared.vaults_for(user)}:
             raise ToolError("Do tohohle sdíleného Obsidianu nepatříš.")
         return
-    raise ToolError("Neznámý Obsidian — použij osobni, firma nebo sdilene:<zkratka>.")
+    raise ToolError("Neznámý Obsidian — použij osobni, firma, firma:<zkratka> "
+                    "nebo sdilene:<zkratka>.")
 
 
 def run_tool(h, user, name, args):
@@ -622,6 +631,9 @@ def run_tool(h, user, name, args):
                                      "write": "čtení i zápis"}[h.accounts.company_level(user)],
                 "sdilene_obsidiany": [{"zkratka": "sdilene:" + v["slug"], "nazev": v["name"]}
                                       for v in shared.vaults_for(user)],
+                "firmy": [{"zkratka": "firma:" + f["zkratka"], "nazev": f["nazev"],
+                           "role": firmy.ROLE_LABELS[f["role"]]}
+                          for f in firmy.firmy_for(user) if f["zkratka"] != firmy.LEGACY],
                 "domov": workspace.home_for(user)}
     if name in ("obsidian_seznam", "obsidian_hledat", "obsidian_cti"):
         which = _which(args)
@@ -634,9 +646,10 @@ def run_tool(h, user, name, args):
         if not isinstance(text, str):
             raise ToolError("Chybí text poznámky.")
         try:
-            if which == "firma":
+            if which == "firma" or which.startswith("firma:"):
                 result = workspace.write_company(user, args.get("cesta"), text,
-                                                 bool(args.get("prepsat")), via="mcp")
+                                                 bool(args.get("prepsat")), via="mcp",
+                                                 firma=which[6:] or firmy.LEGACY)
             elif which.startswith("sdilene:"):
                 result = shared.write_note(user, which[8:], args.get("cesta"), text,
                                            bool(args.get("prepsat")))

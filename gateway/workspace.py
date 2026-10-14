@@ -36,6 +36,7 @@ import threading
 import time
 
 from . import config
+from . import firmy
 from . import safefs
 from . import poznamky
 from . import shared
@@ -557,6 +558,10 @@ def _hub_config(user, home):
         # v týmu — z toho vybírá tools/sdilene.py.
         "shared_vaults": shared.vaults_for(user),
         "people": shared.people(),
+        # Firmy, kde je členem (gateway/firmy.py) — přepínač v okně hubu
+        # a taby firem. Dnešní firemní trezor je mezi nimi jako `firma`.
+        "firmy": firmy.firmy_for(user),
+        "firmy_zakladat": firmy.muze_zakladat(user),
     }
 
 
@@ -680,8 +685,11 @@ def ensure(user, kod=REPO_DIR):
         level = company_level(user)
         _company_claude_md(home, level)
         mine = shared.vaults_for(user)
-        _company_settings(home, [v["path"] for v in mine], company=level != "none")
+        other = [f for f in firmy.firmy_for(user) if f["zkratka"] != firmy.LEGACY]
+        _company_settings(home, [v["path"] for v in mine] + [f["cesta"] for f in other],
+                          company=level != "none")
         _shared_claude_md(home, mine)
+        _firmy_claude_md(home, other, level != "none")
     except (OSError, ValueError):
         pass
 
@@ -908,8 +916,10 @@ def _company_settings(home, extra=(), company=True):
         return
     want = ([config.COMPANY_VAULT] if company else []) + list(extra)
     missing = [d for d in want if d not in dirs]
-    # Bez přístupu k firemnímu se jeho cesta z povolených složek odebere.
-    kept = [d for d in dirs if company or d != config.COMPANY_VAULT]
+    # Bez přístupu k firemnímu se jeho cesta z povolených složek odebere —
+    # stejně tak trezor firmy, ze které člověk odešel.
+    kept = [d for d in dirs if (company or d != config.COMPANY_VAULT)
+            and not (str(d).startswith(config.FIRMY_DIR + os.sep) and d not in want)]
     if not missing and len(kept) == len(dirs):
         return
     perms["additionalDirectories"] = kept + missing
@@ -940,13 +950,14 @@ def publish_company(user, pid, overwrite=False):
     podvržený odkaz kamkoli na serveru. Čte se proto jen obyčejný soubor přímo
     na své cestě, bez následování odkazů.
     """
-    if company_level(user) != "write":
-        raise ValueError("Do firemního Obsidianu nemáš právo zapisovat — požádej admina.")
     data = _read_proposal(user, pid)
+    firma = _firma(data.get("firma"))
+    if not firmy.zapis(user, firma):
+        raise ValueError(_NO_WRITE)
     if not isinstance(data.get("text"), str):
         raise ValueError("Návrh je poškozený.")
     src = os.path.join(os.path.realpath(home_for(user)), PENDING, str(pid) + ".json")
-    result = write_company(user, data.get("cil"), data["text"], overwrite)
+    result = write_company(user, data.get("cil"), data["text"], overwrite, firma=firma)
     if result.get("ok"):
         try:
             os.remove(src)
@@ -955,30 +966,44 @@ def publish_company(user, pid, overwrite=False):
     return result
 
 
-def write_company(user, rel, text, overwrite=False, via=""):
-    """Zapíše poznámku do firemního trezoru za účet `user` — jen s právem
+_NO_WRITE = "Do firemního Obsidianu nemáš právo zapisovat — požádej admina nebo kapitána firmy."
+
+
+def _firma(slug):
+    """Zkratka firmy z návrhu nebo požadavku — bez ní dnešní firma."""
+    slug = str(slug or firmy.LEGACY)
+    if not firmy.exists(slug):
+        raise ValueError("Taková firma tu není.")
+    return slug
+
+
+def write_company(user, rel, text, overwrite=False, via="", firma=firmy.LEGACY):
+    """Zapíše poznámku do trezoru firmy `firma` za účet `user` — jen s právem
     zápisu. Sdílí ji potvrzovací karta v hubu i napojení z appky Claude (`via`
     se zapíše do záznamu o nahráních)."""
-    if company_level(user) != "write":
-        raise ValueError("Do firemního Obsidianu nemáš právo zapisovat — požádej admina.")
+    firma = _firma(firma)
+    if not firmy.zapis(user, firma):
+        raise ValueError(_NO_WRITE)
     if not isinstance(text, str) or len(text.encode("utf-8")) > MAX_PROPOSAL:
         raise ValueError("Poznámka chybí, nebo je moc velká.")
     rel = company_rel(rel)
-    if slozky.special(rel):
+    if firma == firmy.LEGACY and slozky.special(rel):
         raise ValueError(f"{slozky.PEOPLE}/ a {slozky.SHARED}/ nejsou firemní poznámky: do "
                          "osobního Obsidianu se zapisuje rovnou, do sdíleného přes "
                          "sdílený Obsidian (tools/sdilene.py).")
-    vault = os.path.realpath(ensure_company_vault())
+    vault = os.path.realpath(ensure_company_vault() if firma == firmy.LEGACY
+                             else firmy.vault_dir(firma))
     target = os.path.join(vault, *rel.split("/"))
     if os.path.commonpath([os.path.realpath(os.path.dirname(target)), vault]) != vault:
         raise ValueError("Neplatná cesta ve firemním Obsidianu.")
-    if not poznamky.allowed(user, rel):
-        raise ValueError("Na téhle cestě je poznámka, ke které nemáš přístup — vyber jinou.")
+    if not poznamky.allowed(user, rel, firma):
+        raise ValueError("Na téhle cestě je poznámka nebo složka, ke které nemáš přístup "
+                         "— vyber jinou.")
     existed = os.path.exists(target)
     if existed and not overwrite:
         return {"ok": False, "exists": True, "path": rel}
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    if existed and os.path.dirname(rel) in poznamky.masked_dirs():
+    if existed and os.path.dirname(rel) in poznamky.masked_dirs(firma):
         # Ve složce se skrytou poznámkou mají prostory každý soubor přivázaný
         # zvlášť (poznamky.mask_args) — nový soubor přes rename by v nich
         # zůstal ve staré podobě až do restartu. Přepsat na místě.
@@ -995,31 +1020,67 @@ def write_company(user, rel, text, overwrite=False, via=""):
     if via:
         entry["pres"] = via
     try:
-        with open(config.COMPANY_LOG, "a", encoding="utf-8") as fh:
+        with open(os.path.join(firmy.firma_dir(firma), "nahrano.jsonl"), "a",
+                  encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError:
         pass
     return {"ok": True, "path": rel, "overwritten": existed}
 
 
-def upload_company(user, rel, raw, overwrite=False):
-    """Soubor (jakýkoli) do firemního trezoru — nahrává ho člověk v hubu
+def upload_company(user, rel, raw, overwrite=False, firma=firmy.LEGACY):
+    """Soubor (jakýkoli) do trezoru firmy — nahrává ho člověk v hubu
     (gateway/soubory.py). Stejná práva jako poznámka: zápis a viditelnost."""
     from . import soubory
-    if company_level(user) != "write":
-        raise ValueError("Do firemního Obsidianu nemáš právo zapisovat — požádej admina.")
+    firma = _firma(firma)
+    if not firmy.zapis(user, firma):
+        raise ValueError(_NO_WRITE)
     rel = soubory.clean_rel(rel)
-    if slozky.special(rel):
+    if firma == firmy.LEGACY and slozky.special(rel):
         raise ValueError(f"Do {slozky.SHARED}/ nahrávej jako do sdíleného Obsidianu, "
                          "osobní poznámky do osobního Obsidianu.")
-    if not poznamky.allowed_path(user, rel):
+    if not poznamky.allowed_path(user, rel, firma):
         raise ValueError("Do téhle složky nemáš přístup — vyber jinou.")
-    in_place = os.path.dirname(rel) in poznamky.masked_dirs()
-    result = soubory.write(ensure_company_vault(), rel, raw, overwrite,
+    in_place = os.path.dirname(rel) in poznamky.masked_dirs(firma)
+    vault = ensure_company_vault() if firma == firmy.LEGACY else firmy.vault_dir(firma)
+    result = soubory.write(vault, rel, raw, overwrite,
                            quota=soubory.COMPANY_QUOTA, in_place=in_place)
     if result.get("ok"):
-        soubory.log(config.COMPANY_LOG, user, "firma", result)
+        soubory.log(os.path.join(firmy.firma_dir(firma), "nahrano.jsonl"), user,
+                    "firma" if firma == firmy.LEGACY else "firma:" + firma, result)
     return result
+
+
+def delete_company(user, rel, firma=firmy.LEGACY):
+    """Smaže poznámku nebo soubor z trezoru firmy — kapitán, nebo člen s právem
+    mazat (firmy.mazat). Nic nemizí natrvalo: soubor se odloží do složky firmy
+    mimo trezor (`smazano/`), odkud ho správce vrátí. Mazání klientů
+    a podkategorií je v Nastavení → Firmy (firmy.smazat_slozku)."""
+    from . import soubory
+    firma = _firma(firma)
+    if not firmy.mazat(user, firma):
+        raise ValueError("Mazat ve firmě smí kapitán a ti, komu to kapitán povolí.")
+    rel = soubory.clean_rel(rel)
+    if firma == firmy.LEGACY and slozky.special(rel):
+        raise ValueError("Osobní a sdílené složky se tady nemažou.")
+    if not poznamky.allowed_path(user, rel, firma):
+        raise ValueError("K téhle poznámce nemáš přístup.")
+    vault = os.path.realpath(ensure_company_vault() if firma == firmy.LEGACY
+                             else firmy.vault_dir(firma))
+    src = os.path.join(vault, *rel.split("/"))
+    if (os.path.islink(src) or not os.path.isfile(src)
+            or os.path.commonpath([os.path.realpath(os.path.dirname(src)), vault]) != vault):
+        raise ValueError("Taková poznámka tu není.")
+    aside = os.path.join(firmy.firma_dir(firma), "smazano")
+    os.makedirs(aside, exist_ok=True)
+    os.rename(src, os.path.join(aside, time.strftime("%Y%m%d-%H%M%S-") + rel.replace("/", "__")))
+    try:
+        with open(os.path.join(firmy.firma_dir(firma), "nahrano.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"cas": time.strftime("%Y-%m-%d %H:%M:%S"), "email": user.get("email", ""),
+                                 "smazano": rel}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+    return {"ok": True, "path": rel}
 
 
 # ── sdílené Obsidiany: pokyny pro Clauda a provedení návrhů ──────────────────
@@ -1076,6 +1137,95 @@ def _shared_claude_md(home, mine):
         new = text[:start] + block.rstrip("\n") + text[end + len(SHARED_MARK[1]):]
     else:
         new = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block
+    if new != text:
+        safefs.write_text(home, ".claude/CLAUDE.md", new)
+
+
+# ── další firmy: pokyny pro Clauda ───────────────────────────────────────────
+FIRMY_MARK = ("<!-- claude-hub:firmy -->", "<!-- /claude-hub:firmy -->")
+
+
+def _skill_categories(path):
+    try:
+        return [d for d in sorted(os.listdir(path)) if not d.startswith(("_", "."))
+                and os.path.isdir(os.path.join(path, d))]
+    except OSError:
+        return []
+
+
+def _firmy_block(other, legacy_member=False):
+    """Pokyny k firmám (gateway/firmy.py) — kromě dnešního firemního
+    Obsidianu, ten má vlastní blok. Bez firem prázdné."""
+    if not other:
+        return ""
+    tool = os.path.join(REPO_DIR, "tools", "firma.py")
+    rows = []
+    for f in other:
+        cats = _skill_categories(os.path.join(f["cesta"], "skills"))
+        struktura = (f"`{firmy.KLIENTI}/<klient>/<podkategorie>/`" if f.get("druh") != "projekty"
+                     else f"`{firmy.PROJEKTY}/<projekt>/`")
+        rows.append(f"- **{f['nazev']}** (zkratka `{f['zkratka']}`, `{f['cesta']}`) — role: "
+                    + firmy.ROLE_LABELS.get(f["role"], f["role"])
+                    + (" (jen čtení)" if f["role"] == "host" else "")
+                    + f"; práce je v {struktura}"
+                    + (f"; skilly firmy: {', '.join(cats)}" if cats else ""))
+    common = ""
+    if not legacy_member and _skill_categories(config.COMPANY_SKILLS):
+        common = (f"\nSpolečné skilly pro všechny firmy jsou v `{config.COMPANY_SKILLS}"
+                  "/<kategorie>/<skill>/SKILL.md` — podle zadání vyber nejvýš dva tři a přečti "
+                  "jejich `SKILL.md`, než začneš.\n")
+    return f"""{FIRMY_MARK[0]}
+## Firmy
+
+Tenhle uživatel je členem firem — každá má vlastní Obsidian (jen ke čtení):
+
+{chr(10).join(rows)}
+{common}
+**Struktura.** Obecné věci firmy jsou v kořeni jejího trezoru. Agentura má práci
+pro klienty v `{firmy.KLIENTI}/<klient>/<podkategorie>/` (třeba `{firmy.KLIENTI}/Pytlík/Web/`),
+firma, která pracuje pro sebe, v `{firmy.PROJEKTY}/<projekt>/` (u každé firmy výš).
+Vidíš jen to, k čemu má uživatel přístup — co nevidíš, neexistuje pro tebe;
+o přístup se žádá kapitána firmy.
+
+**Pravidla složek.** Než do složky firmy cokoli zapíšeš, přečti si `CLAUDE.md`
+v ní a ve všech složkách nad ní až po kořen trezoru firmy, a drž se jich.
+
+**Firmy nemíchej.** Co patří jedné firmě, nepiš do jiné, ani do osobního
+Obsidianu. Kterou firmu tab řeší, poznáš podle `HUB_VAULT=firma:<zkratka>`.
+
+**Zápis** jde jen nástrojem (trezory jsou jen ke čtení), host nezapisuje:
+
+- Firemní tab (`HUB_VAULT=firma:<zkratka>`): poznámku připrav a rovnou pošli
+  `python3 {tool} navrh "Klienti/Pytlík/Web/stav.md" - ` (obsah na standardní
+  vstup) — nahraje se hned do firmy tabu.
+- Osobní tab: nejdřív se v chatu zeptej (co, kam, do které firmy, kdo to uvidí),
+  po výslovném „ano“ `python3 {tool} navrh --firma <zkratka> "cesta.md" soubor.md
+  --potvrzeno`; uživatel to potvrdí kartou v hubu.
+
+Hesla, klíče, tokeny a přístupy do firem nikdy nepiš — patří do napojení (MCP),
+která firma sdílí.
+{FIRMY_MARK[1]}
+"""
+
+
+def _firmy_claude_md(home, other, legacy_member=False):
+    """Blok o firmách v ~/.claude/CLAUDE.md — mezi značkami se přepíše,
+    bez firem se smaže, zbytek souboru zůstane."""
+    text = safefs.read_text(home, ".claude/CLAUDE.md")
+    if text is None:
+        if safefs.is_file(home, ".claude/CLAUDE.md"):
+            return
+        text = ""
+    block = _firmy_block(other, legacy_member)
+    start, end = text.find(FIRMY_MARK[0]), text.find(FIRMY_MARK[1])
+    if start >= 0 and end > start:
+        new = text[:start] + block.rstrip("\n") + text[end + len(FIRMY_MARK[1]):]
+        if not block:
+            new = new.rstrip("\n") + "\n" if new.strip() else ""
+    elif block:
+        new = (text.rstrip("\n") + "\n\n" if text.strip() else "") + block
+    else:
+        new = text
     if new != text:
         safefs.write_text(home, ".claude/CLAUDE.md", new)
 
@@ -1147,8 +1297,8 @@ def session_spec(user, isolation, mode):
     `home` je pracovní složka i jediné zapisovatelné místo session; `unit` je
     jméno systemd scope, podle kterého se prostor pozná a zastaví (prázdné,
     když na stroji systemd-run není a limity se nepoužijí); `verze` = verze
-    hubu, na které prostor pojede; `skryté` = poznámky firemního trezoru,
-    které v prostoru nejsou (gateway/poznamky.py).
+    hubu, na které prostor pojede; `skryté` = {zkratka firmy: cesty}, které
+    v prostoru nejsou (gateway/poznamky.py, gateway/firmy.py).
     """
     # Bez sandboxu se jiná složka na místo REPO_DIR přivázat nedá — tam jede
     # prostor přímo ze zdroje.
@@ -1162,16 +1312,42 @@ def session_spec(user, isolation, mode):
     # po potvrzení.
     # Bez přístupu k firemnímu se do sandboxu vůbec nepřiváže — neuvidí ho
     # ani Claude, ani terminál.
-    company = [config.COMPANY_VAULT] if company_level(user) != "none" else []
+    legacy_member = company_level(user) != "none"
+    company = [config.COMPANY_VAULT] if legacy_member else []
     # Poznámky, které uživatel vidět nemá, v sandboxu vůbec nejsou. Jinak než
     # přes bwrap je vynechat neumíme — tam se radši nepřiváže celý trezor.
     hidden = poznamky.hidden_for(user) if company else []
-    masks = poznamky.mask_args(config.COMPANY_VAULT, hidden) if hidden and mode == "bwrap" else []
+    always = poznamky.always_masked(user) if company else []
+    masks = (poznamky.mask_args(config.COMPANY_VAULT, hidden, always)
+             if (hidden or always) and mode == "bwrap" else [])
     # Cizí odkazy v Lidé/ a Sdílené/ vedou v sandboxu do prázdna — kvůli nim
     # celý trezor schovávat nemusíme. Kvůli omezené poznámce ano.
-    if mode != "bwrap" and [h for h in hidden if not slozky.special(h)]:
+    if mode != "bwrap" and ([h for h in hidden if not slozky.special(h)] or always):
         company = []
-    extra_ro = [(kod, REPO_DIR)] + company + [v["path"] for v in shared.vaults_for(user)]
+    # Co bylo při startu skryté, po firmách, kde je členem — podle toho brána
+    # pozná, že se přístupy změnily a prostor chce restart (i u firmy, která se
+    # bez bwrap nepřivázala).
+    skryte = {firmy.LEGACY: hidden} if legacy_member else {}
+    # Další firmy (gateway/firmy.py): každá jen ke čtení, se svými skrytými
+    # klienty, podkategoriemi a poznámkami. Kdo ve firmě není, nemá ji vůbec.
+    other = []
+    for f in firmy.firmy_for(user):
+        if f["zkratka"] == firmy.LEGACY:
+            continue
+        f_hidden = poznamky.hidden_for(user, firma=f["zkratka"])
+        f_always = poznamky.always_masked(user, f["zkratka"])
+        skryte[f["zkratka"]] = f_hidden
+        if (f_hidden or f_always) and mode != "bwrap":
+            continue
+        other.append(f["cesta"])
+        if f_hidden or f_always:
+            masks += poznamky.mask_args(f["cesta"], f_hidden, f_always)
+    # Skilly z dnešního firemního trezoru jsou pro všechny firmy — kdo do něj
+    # nepatří, dostane aspoň je (jen ke čtení), pokud v nich nic omezené není.
+    if other and not company and _skills_open():
+        other.append(config.COMPANY_SKILLS)
+    extra_ro = ([(kod, REPO_DIR)] + company + [v["path"] for v in shared.vaults_for(user)]
+                + other)
     unit = unit_name(user)
     # Stará cesta u<id> vede v sandboxu na nový domov: cache (uv, npx) mají
     # absolutní cesty zapečené uvnitř a přepisovat je by bylo křehké.
@@ -1181,4 +1357,14 @@ def session_spec(user, isolation, mode):
                           ucet=slug(user), masks=masks)
     if argv[:1] not in (["systemd-run"], ["sudo"]):
         unit = ""                 # bez scope (docker, stroj bez systemd)
-    return argv, home, unit, verze, hidden
+    return argv, home, unit, verze, skryte
+
+
+def _skills_open():
+    """Firemní skilly jdou přivázat i lidem mimo dnešní firmu: složka je
+    a žádná poznámka ani složka v ní není omezená (poznamky.py)."""
+    if not os.path.isdir(config.COMPANY_SKILLS):
+        return False
+    data = poznamky._load()
+    return not any(rel == "skills" or rel.startswith("skills/")
+                   for rel in list(data["poznamky"]) + list(data["slozky"]))

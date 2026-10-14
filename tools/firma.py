@@ -4,6 +4,10 @@
     python3 firma.py navrh CÍL [SOUBOR | -] --potvrzeno   připraví poznámku ke schválení
     python3 firma.py seznam                                co čeká na potvrzení
     python3 firma.py kde                                   kde je firemní trezor
+    python3 firma.py firmy                                 firmy, kde je uživatel členem
+
+Další firmy (gateway/firmy.py): `--firma <zkratka>` u navrh a kde. Ve firemním
+tabu firmy (HUB_VAULT=firma:<zkratka>) se firma bere z něj.
 
 Nic nenahrává. Návrh uloží do ~/.firma/ke-schvaleni/ a hub ho uživateli ukáže
 s náhledem a tlačítkem Nahrát. Firemní trezor je v prostoru jen ke čtení
@@ -41,11 +45,32 @@ def config():
         return {}
 
 
-def company_vault():
+def company_vault(firma=""):
+    if firma:
+        f = next((f for f in config().get("firmy") or []
+                  if isinstance(f, dict) and f.get("zkratka") == firma), None)
+        if not f or not f.get("cesta"):
+            fail(f"Do firmy „{firma}“ tenhle účet nepatří (python3 firma.py firmy vypíše, do kterých ano).")
+        return f["cesta"]
     vault = config().get("company_vault") or ""
     if not vault:
         fail("Firemní Obsidian tu není — je jen v prostorech na serveru (bráně).")
     return vault
+
+
+def _firma_arg(args):
+    """(firma, zbytek argumentů): `--firma X`, jinak z HUB_VAULT=firma:X."""
+    firma, rest, i = "", [], 0
+    while i < len(args):
+        if args[i] == "--firma" and i + 1 < len(args):
+            firma, i = args[i + 1], i + 2
+            continue
+        rest.append(args[i])
+        i += 1
+    tab = os.environ.get("HUB_VAULT", "")
+    if not firma and tab.startswith("firma:"):
+        firma = tab[len("firma:"):]
+    return ("" if firma == "firma" else firma), rest
 
 
 def target(rel):
@@ -66,24 +91,30 @@ def target(rel):
 def navrh(args):
     # Firemní tab v hubu (HUB_VAULT=firma): souhlas dal uživatel tím, že ho
     # otevřel — poznámka se nahraje rovnou, bez ptaní a bez karty.
-    auto = os.environ.get("HUB_VAULT", "") == "firma"
+    tab = os.environ.get("HUB_VAULT", "")
+    firma, args = _firma_arg(args)
+    # Firemní tab jiné firmy, než kam se má zapsat, souhlas nedává.
+    auto = tab == ("firma:" + firma if firma else "firma")
     confirmed = auto or "--potvrzeno" in args
     args = [a for a in args if a != "--potvrzeno"]
     if not args:
-        fail("Použití: firma.py navrh CÍL [SOUBOR | -] --potvrzeno")
+        fail("Použití: firma.py navrh [--firma ZKRATKA] CÍL [SOUBOR | -] --potvrzeno")
     rel = target(args[0])
-    vault = company_vault()
+    vault = company_vault(firma)
     # Jen ke čtení: brána by návrh stejně odmítla, tak ať to Claude ví hned.
-    if config().get("company_level") == "read":
-        fail("Tenhle účet má firemní Obsidian jen ke čtení — zapisovat do něj nejde. "
-             "Řekni uživateli, ať požádá admina o právo zápisu.")
+    role = next((f.get("role") for f in config().get("firmy") or []
+                 if isinstance(f, dict) and f.get("zkratka") == (firma or "firma")), "")
+    if config().get("company_level") == "read" and not firma or role == "host":
+        fail("Tenhle účet má tenhle firemní Obsidian jen ke čtení — zapisovat do něj nejde. "
+             "Řekni uživateli, ať požádá admina nebo kapitána firmy o právo zápisu.")
     if not confirmed:
         exists = os.path.exists(os.path.join(vault, *rel.split("/")))
         print("Ještě nic nevzniklo — nejdřív se zeptej uživatele. Napiš mu v chatu, co "
               f"přesně do firemního Obsidianu nahraješ (stručné shrnutí obsahu) a kam: {rel}"
               + (" — a že tím PŘEPÍŠEŠ existující poznámku" if exists else "")
-              + ". Firemní Obsidian uvidí celý tým. Až to výslovně potvrdí, spusť "
-              "příkaz znovu s --potvrzeno.", file=sys.stderr)
+              + (f" ve firmě „{firma}“. Uvidí to každý, kdo do té složky firmy vidí."
+                 if firma else ". Firemní Obsidian uvidí celý tým.")
+              + " Až to výslovně potvrdí, spusť příkaz znovu s --potvrzeno.", file=sys.stderr)
         sys.exit(3)
     source = args[1] if len(args) > 1 else "-"
     try:
@@ -106,6 +137,8 @@ def navrh(args):
             "vytvoreno": time.strftime("%Y-%m-%d %H:%M:%S")}
     if auto:
         data["auto"] = True
+    if firma:
+        data["firma"] = firma
     # Nejdřív dočasný soubor: hub čte jen hotové .json, rozepsaný návrh nevidí.
     tmp = os.path.join(PENDING, pid + ".tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
@@ -145,7 +178,12 @@ def main(argv):
     elif cmd == "seznam":
         seznam()
     elif cmd == "kde":
-        print(company_vault())
+        print(company_vault(_firma_arg(argv[1:])[0]))
+    elif cmd == "firmy":
+        for f in config().get("firmy") or []:
+            if isinstance(f, dict):
+                print(f"{f.get('zkratka', ''):<20} {f.get('nazev', ''):<28} "
+                      f"{f.get('role', '')}  {f.get('cesta', '')}")
     else:
         print(__doc__.strip())
         sys.exit(0 if cmd in ("-h", "--help", "") else 2)

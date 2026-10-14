@@ -15,16 +15,24 @@ Kdo co smí, rozhoduje jen tenhle modul, ne prostor:
 
 Registr drží brána mimo domovy (GATEWAY_DIR/relace.json) podle id účtů.
 Kdo se zrovna dívá, se drží jen v paměti — je to „právě teď“, ne historie.
+
+**Podkategorie firmy** (gateway/firmy.py) může být příjemcem stejně jako člověk:
+chat pak vidí každý, kdo do podkategorie vidí (`skupiny`, psát `skupiny_psat`).
+Vedle živého sdílení jde chat do podkategorie i **uložit** — kopie přepisu
+leží ve složce firmy (`<firma>/chaty/`, mimo trezor) a kdokoli s přístupem
+k podkategorii na ni naváže přes „Pokračovat u sebe“, i když autor z firmy
+odešel nebo má prostor vypnutý. Nic se neukládá samo, jen na pokyn.
 """
 import contextlib
 import fcntl
 import json
 import os
+import re
 import secrets
 import threading
 import time
 
-from . import config, shared
+from . import config, firmy, shared
 
 REGISTRY = os.path.join(config.GATEWAY_DIR, "relace.json")
 LOG = os.path.join(config.GATEWAY_DIR, "relace.jsonl")
@@ -88,13 +96,17 @@ def _je_spravce(user):
 
 
 def role(user, entry):
-    """'majitel' | 'pise' | 'cte' | '' — co uživatel s relací smí."""
+    """'majitel' | 'pise' | 'cte' | '' — co uživatel s relací smí. Jmenovitě,
+    nebo přes podkategorii firmy, do které vidí."""
     uid = int(user["id"])
     if entry.get("owner") == uid:
         return "majitel"
     if uid in entry.get("psat", []):
         return "pise"
-    if uid in entry.get("members", []):
+    groups = [g for g in entry.get("skupiny") or [] if firmy.ve_skupine(user, g)]
+    if any(g in (entry.get("skupiny_psat") or []) for g in groups):
+        return "pise"
+    if uid in entry.get("members", []) or groups:
         return "cte"
     return ""
 
@@ -117,7 +129,10 @@ def _public(rid, entry, user):
     return {"id": rid, "chat": entry.get("chat", ""), "titulek": entry.get("titulek") or "Chat",
             "majitel": (owner.get("name") or owner["email"]) if owner else "",
             "role": role(user, entry) or ("spravce" if _je_spravce(user) else ""),
-            "clenove": members, "diva": diva, "pisou": pisou, "vytvoreno": entry.get("vytvoreno", 0)}
+            "clenove": members, "diva": diva, "pisou": pisou, "vytvoreno": entry.get("vytvoreno", 0),
+            "skupiny": [{"id": g, "nazev": firmy.skupina_nazev(g),
+                         "pise": g in (entry.get("skupiny_psat") or [])}
+                        for g in entry.get("skupiny") or []]}
 
 
 def seznam(user):
@@ -128,22 +143,45 @@ def seznam(user):
     for rid, entry in sorted(rel.items(), key=lambda x: -x[1].get("vytvoreno", 0)):
         if entry.get("owner") == uid:
             moje.append(_public(rid, entry, user))
-        elif uid in entry.get("members", []):
+        elif role(user, entry):
             semnou.append(_public(rid, entry, user))
-    return {"moje": moje, "semnou": semnou}
+    return {"moje": moje, "semnou": semnou, "ulozene": ulozene(user)}
 
 
-def zalozit(user, chat, titulek, emails, psat_emails=()):
-    """Nová sdílená relace nad chatem majitele (nebo změna členů, když už je)."""
+def _skupiny(user, raw):
+    """Podkategorie z formuláře — jen ty, kam `user` smí sdílet."""
+    if isinstance(raw, str):
+        raw = [g for g in raw.split(",") if g.strip()]
+    allowed = {g["id"] for g in firmy.skupiny_pro(user)}
+    out = []
+    for g in raw or []:
+        g = str(g or "").strip()
+        if g not in allowed:
+            raise ValueError("Do téhle podkategorie sdílet nemůžeš (nevidíš ji, nebo jsi ve firmě host).")
+        if g not in out:
+            out.append(g)
+    return out
+
+
+def _chat_id(chat):
     chat = str(chat or "").strip()
     if not chat or len(chat) > 80 or not all(c.isalnum() or c in "-_" for c in chat):
         raise ValueError("Tenhle chat se nedá sdílet (chybí jeho číslo) — pošli v něm aspoň jednu zprávu.")
+    return chat
+
+
+def zalozit(user, chat, titulek, emails, psat_emails=(), skupiny=(), skupiny_psat=()):
+    """Nová sdílená relace nad chatem majitele (nebo změna členů, když už je).
+    Příjemci jsou lidé (`emails`) i podkategorie firem (`skupiny`)."""
+    chat = _chat_id(chat)
     ids, neznami = shared._resolve(emails)
     psat, _ = shared._resolve(psat_emails)
     uid = int(user["id"])
     ids = [m for m in ids if m != uid]
-    if not ids:
-        raise ValueError("Vyber aspoň jednoho kolegu, se kterým chat sdílíš.")
+    groups = _skupiny(user, skupiny)
+    groups_psat = [g for g in _skupiny(user, skupiny_psat) if g in groups]
+    if not ids and not groups:
+        raise ValueError("Vyber aspoň jednoho kolegu nebo podkategorii, se kterými chat sdílíš.")
     psat = [m for m in psat if m in ids]
     with _locked():
         rel = _load()
@@ -152,9 +190,11 @@ def zalozit(user, chat, titulek, emails, psat_emails=()):
         if novy:
             rid = secrets.token_urlsafe(9)
             rel[rid] = {"owner": uid, "chat": chat, "vytvoreno": int(time.time())}
-        rel[rid].update(members=ids, psat=psat, titulek=str(titulek or "")[:120])
+        rel[rid].update(members=ids, psat=psat, titulek=str(titulek or "")[:120],
+                        skupiny=groups, skupiny_psat=groups_psat)
         _save(rel)
-    _log(user, "zalozeno" if novy else "zmeneno", rid, clenove=len(ids), psat=len(psat))
+    _log(user, "zalozeno" if novy else "zmeneno", rid, clenove=len(ids), psat=len(psat),
+         podkategorie=[firmy.skupina_nazev(g) for g in groups])
     zprava = ("Chat je sdílený." if novy else "Sdílení je upravené.")
     if neznami:
         zprava += " Neznámé adresy: " + ", ".join(neznami) + "."
@@ -182,10 +222,11 @@ def odejit(user, rid):
         rel = _load()
         entry = rel.get(rid)
         if not entry or uid not in entry.get("members", []):
-            raise ValueError("V téhle relaci nejsi.")
+            raise ValueError("V téhle relaci nejsi jmenovitě — vidíš ji přes podkategorii firmy."
+                             if entry and role(user, entry) else "V téhle relaci nejsi.")
         entry["members"] = [m for m in entry["members"] if m != uid]
         entry["psat"] = [m for m in entry.get("psat", []) if m != uid]
-        if not entry["members"]:
+        if not entry["members"] and not entry.get("skupiny"):
             del rel[rid]
         _save(rel)
     _log(user, "odchod", rid)
@@ -239,10 +280,111 @@ def forget_user(uid):
                 entry["members"] = [m for m in entry["members"] if m != uid]
                 entry["psat"] = [m for m in entry.get("psat", []) if m != uid]
                 zmena = True
-                if not entry["members"]:
+                if not entry["members"] and not entry.get("skupiny"):
                     del rel[rid]
         if zmena:
             _save(rel)
+
+
+# ── chaty uložené do podkategorie ────────────────────────────────────────────
+ULOZENY = re.compile(r"[A-Za-z0-9_-]{8,40}")
+
+
+def _chaty_dir(slug):
+    return os.path.join(firmy.firma_dir(slug), "chaty")
+
+
+def ulozit(user, chat, titulek, skupiny):
+    """Kopie chatu `user` do podkategorií firem — na pokyn, ne sama. Zip leží
+    ve složce firmy mimo trezor; navazuje se na něj přes „Pokračovat u sebe“."""
+    from hub import prenos
+    from . import workspace
+    chat = _chat_id(chat)
+    groups = _skupiny(user, skupiny)
+    if not groups:
+        raise ValueError("Vyber podkategorii, kam chat uložit.")
+    data, meta = prenos.zabal(os.path.join(workspace.home_for(user), ".claude"), chat,
+                              titulek or "Chat", odkud=jmeno(user))
+    for g in groups:
+        slug, rel = firmy.skupina(g)
+        folder = _chaty_dir(slug)
+        os.makedirs(folder, mode=0o700, exist_ok=True)
+        sid = secrets.token_urlsafe(12)
+        with open(os.path.join(folder, sid + ".zip"), "wb") as fh:
+            fh.write(data)
+        info = {"skupina": g, "owner": int(user["id"]), "chat": chat,
+                "titulek": meta.get("title") or "Chat", "vytvoreno": int(time.time())}
+        with open(os.path.join(folder, sid + ".json"), "w", encoding="utf-8") as fh:
+            json.dump(info, fh, ensure_ascii=False)
+        _log(user, "ulozeno", sid, podkategorie=firmy.skupina_nazev(g))
+    names = ", ".join(firmy.skupina_nazev(g) for g in groups)
+    return {"ok": True, "message": f"Chat je uložený do: {names}. Kdo tam vidí, naváže na něj "
+                                   "v Sdílených chatech tlačítkem Pokračovat u sebe."}
+
+
+def _ulozene_vse():
+    """[(sid, slug, info)] — všechny uložené chaty všech firem."""
+    out = []
+    for slug in firmy.slugs():
+        folder = _chaty_dir(slug)
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            continue
+        for name in names:
+            sid = name[:-5] if name.endswith(".json") else ""
+            if not ULOZENY.fullmatch(sid):
+                continue
+            try:
+                with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                    info = json.load(fh)
+            except (OSError, ValueError):
+                continue
+            if isinstance(info, dict) and str(info.get("skupina") or "").startswith(slug + ":"):
+                out.append((sid, slug, info))
+    return out
+
+
+def ulozene(user):
+    """Uložené chaty v podkategoriích, do kterých `user` vidí."""
+    data = firmy._load()
+    out = []
+    for sid, slug, info in sorted(_ulozene_vse(), key=lambda x: -x[2].get("vytvoreno", 0)):
+        if not firmy.ve_skupine(user, info["skupina"], data):
+            continue
+        out.append({"id": sid, "titulek": info.get("titulek") or "Chat", "firma": slug,
+                    "skupina": firmy.skupina_nazev(info["skupina"], data),
+                    "autor": _jmeno(info.get("owner")) or "(už tu není)",
+                    "moje": info.get("owner") == int(user["id"]),
+                    "vytvoreno": info.get("vytvoreno", 0)})
+    return out
+
+
+def ulozeny(user, sid):
+    """(info, cesta k zipu) uloženého chatu, ke kterému má `user` přístup."""
+    sid = str(sid or "")
+    for s, slug, info in _ulozene_vse():
+        if s == sid and firmy.ve_skupine(user, info["skupina"]):
+            return info, os.path.join(_chaty_dir(slug), sid + ".zip")
+    raise ValueError("K tomuhle uloženému chatu nemáš přístup.")
+
+
+def smazat_ulozeny(user, sid):
+    """Smaže uložený chat — jeho autor, nebo kapitán firmy."""
+    sid = str(sid or "")
+    for s, slug, info in _ulozene_vse():
+        if s != sid:
+            continue
+        if info.get("owner") != int(user["id"]) and firmy.role(user, slug) != "kapitan":
+            raise ValueError("Uložený chat smaže jen ten, kdo ho uložil, nebo kapitán firmy.")
+        for ext in (".zip", ".json"):
+            try:
+                os.remove(os.path.join(_chaty_dir(slug), sid + ext))
+            except OSError:
+                pass
+        _log(user, "smazano-ulozeny", sid)
+        return {"ok": True, "message": "Uložený chat je smazaný."}
+    raise ValueError("Takový uložený chat tu není.")
 
 
 _PSANI = {}                   # uid → časy posledních zpráv (proti zahlcení)

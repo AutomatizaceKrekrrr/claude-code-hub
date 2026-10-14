@@ -106,7 +106,8 @@
 
   function syncTabs() {
     if (!tabbar || !openBox || renaming) return;
-    const tabs = [...tabbar.querySelectorAll('.tab')];
+    // Taby jiného prostoru (firma × osobní, hub.js applyProstor) jsou schované.
+    const tabs = [...tabbar.querySelectorAll('.tab')].filter((t) => !t.hidden);
     const active = tabs.find((t) => t.classList.contains('active'));
     const name = (t) => (t.querySelector('.tab-title') || t).textContent.trim();
     if (tabTitle) tabTitle.textContent = active ? name(active) : '';
@@ -214,7 +215,7 @@
       cancelAnimationFrame(pending);
       pending = requestAnimationFrame(syncTabs);
     }).observe(tabbar, {childList: true, subtree: true, characterData: true,
-                        attributes: true, attributeFilter: ['class', 'style']});
+                        attributes: true, attributeFilter: ['class', 'style', 'hidden']});
     syncTabs();
   }
 

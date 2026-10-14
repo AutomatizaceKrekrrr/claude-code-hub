@@ -1024,7 +1024,11 @@ class Handler(BaseHTTPRequestHandler):
         # Náhled trezoru Obsidian (vault.js) — jen ke čtení, jen uvnitř trezoru.
         # `vault=firma` je společný firemní Obsidian (na bráně), jinak osobní.
         asked = query.get("vault", [""])[0]
-        which = asked if asked == "firma" or re.fullmatch(r"sdilene:[a-z0-9][a-z0-9-]{0,49}", asked) else ""
+        which = asked if (asked == "firma" or re.fullmatch(r"sdilene:[a-z0-9][a-z0-9-]{0,49}", asked)
+                          or core.is_firma_vault(asked)) else ""
+        if name == "firma-klienti":
+            # Klienti a podkategorie firmy, jak je prostor vidí (gateway/firmy.py).
+            return self._json(core.firma_klienti(query.get("firma", [""])[0]))
         if name == "vault-tree":
             return self._json(core.vault_tree(which))
         if name == "vault-note":
